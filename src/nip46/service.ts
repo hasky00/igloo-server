@@ -6,7 +6,7 @@ import {
   getPendingNip46RequestByClientId,
   getNip46Relays,
   getTransportKey,
-  mergeNip46Relays,
+  listSessions,
   Nip46Policy,
   Nip46RequestRecord,
   setNip46Relays,
@@ -245,7 +245,7 @@ export class Nip46Service {
 
   async reloadRelays(): Promise<void> {
     if (!this.agent || this.activeUserId == null) return
-    const relays = await this.loadRelays(this.activeUserId)
+    const relays = await this.listeningRelays(this.activeUserId)
     if (!arraysEqual(relays, this.currentRelays)) {
       try {
         await this.agent.connect(relays)
@@ -301,11 +301,9 @@ export class Nip46Service {
       } catch (error) {
         this.log('warn', 'Failed to subscribe to relays from connect string', { error: this.serializeError(error), relays })
       }
-      try {
-        mergeNip46Relays(userId, relays)
-      } catch (error) {
-        this.log('warn', 'Failed to persist relays from connect string', { error: this.serializeError(error) })
-      }
+      // Not merged into the saved NIP-46 relay list: that list is the operator's
+      // own (switch_relays sends clients there). The invite relays are stored on
+      // the session below, and listeningRelays() keeps the socket on them.
     }
 
     const profileName = typeof invite?.profile?.name === 'string' ? invite.profile.name : (typeof invite?.name === 'string' ? invite.name : undefined)
@@ -367,7 +365,7 @@ export class Nip46Service {
     if (this.activeUserId == null) return
     const [lib, relays] = await Promise.all([
       loadNostrConnect(),
-      this.loadRelays(this.activeUserId)
+      this.listeningRelays(this.activeUserId)
     ])
     const { SignerAgent, SimpleSigner } = lib as any
 
@@ -419,6 +417,23 @@ export class Nip46Service {
     }
   }
 
+  /**
+   * Relays the NIP-46 socket must listen on: the saved list plus the relays of
+   * every active session. Clients talk to us on their own relays; listening only
+   * on the saved list made a reload or restart silently drop them.
+   */
+  private async listeningRelays(userId: number | bigint): Promise<string[]> {
+    const relays = new Set(await this.loadRelays(userId))
+    try {
+      for (const session of listSessions(userId)) {
+        for (const relay of session.relays ?? []) relays.add(relay)
+      }
+    } catch (error) {
+      this.log('warn', 'Failed to read session relays', { error: this.serializeError(error) })
+    }
+    return Array.from(relays)
+  }
+
   private async loadRelays(userId: number | bigint): Promise<string[]> {
     const stored = getNip46Relays(userId)
     if (stored.length > 0) return stored
@@ -462,7 +477,8 @@ export class Nip46Service {
         client_pubkey: pubkey,
         status: 'active',
         profile: session.profile,
-        relays: session.relays,
+        // Most requests carry no relays; [] would overwrite the ones saved at connect.
+        relays: session.relays.length ? session.relays : undefined,
         policy: session.policy ?? undefined,
         touchLastActive: true
       })
@@ -481,9 +497,19 @@ export class Nip46Service {
     }
 
     // NIP-46 switch_relays: clients (welshman/Coracle) call it right after
-    // connecting and abort the login on an error. "null" = keep current relays.
+    // connecting and abort the login on an error. Answer with our saved NIP-46
+    // relays so the client moves there: they survive restarts and reloads, and
+    // keep the traffic on the operator's relays. "null" = keep current relays.
     if (req.method === 'switch_relays') {
-      await this.sendSocketResponse(req, pubkey, { result: 'null' })
+      const ours = await this.loadRelays(this.activeUserId)
+      await this.sendSocketResponse(req, pubkey, { result: ours.length ? JSON.stringify(ours) : 'null' })
+      if (ours.length) {
+        try {
+          upsertSession({ userId: this.activeUserId, client_pubkey: pubkey, status: 'active', relays: ours })
+        } catch (error) {
+          this.log('warn', 'Failed to store switched session relays', { error: this.serializeError(error) })
+        }
+      }
       return
     }
 
@@ -757,13 +783,6 @@ export class Nip46Service {
     const rawKey = req?.session?.pubkey || req?.pubkey || req?.env?.pubkey || req?.client_pubkey
     const normalizedKey = normalizePubkey(rawKey ?? undefined)
     const relays = Array.isArray(req?.session?.relays) ? req.session.relays.filter((r: any) => typeof r === 'string') : []
-    if (relays.length && this.activeUserId != null) {
-      try {
-        mergeNip46Relays(this.activeUserId, relays)
-      } catch (error) {
-        this.log('warn', 'Failed to merge relays from session', { error: this.serializeError(error) })
-      }
-    }
     return {
       pubkey: normalizedKey,
       profile: {
