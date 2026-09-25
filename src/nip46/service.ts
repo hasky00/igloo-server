@@ -17,7 +17,8 @@ import {
 } from '../db/nip46.js'
 import { logSessionEvent } from '../db/nip46.js'
 import { deriveNip44ConversationKey, deriveSharedSecret, xOnly } from '../routes/crypto-utils.js'
-import { getOpTimeoutMs, withTimeout } from '../routes/utils.js'
+import { getOpTimeoutMs } from '../routes/utils.js'
+import { groupPubkey, signEventWithPolicy } from '../cinderella/sign-event.js'
 import { getEventHash, nip44 } from 'nostr-tools'
 
 const DEFAULT_RELAYS = ['wss://relay.primal.net']
@@ -880,33 +881,21 @@ export class Nip46Service {
     const node = this.deps.getNode()
     if (!node) throw new Error('Signing node unavailable')
 
-    const timeoutMs = getOpTimeoutMs()
-    const safeSignPromise = node.req.sign(eventId)
-      .then((res: any) => res)
-      .catch((error: unknown) => ({ ok: false, err: error instanceof Error ? error.message : String(error) }))
-
-    const signResult = await withTimeout(safeSignPromise, timeoutMs, 'SIGN_TIMEOUT')
-    if (!signResult || signResult.ok !== true) {
-      const reason = signResult?.err || (signResult?.error ?? 'Signing failed')
-      throw new Error(typeof reason === 'string' ? reason : 'Signing failed')
-    }
-
-    let signatureHex: string | null = null
-    try {
-      if (Array.isArray(signResult.data)) {
-        const entry = signResult.data.find((e: unknown) => Array.isArray(e) && e[0] === eventId) || signResult.data[0]
-        signatureHex = Array.isArray(entry) ? entry[2] : null
-      }
-    } catch (error) {
-      this.log('error', 'NIP-46: error extracting signature', { error: this.serializeError(error) })
-    }
-
-    if (!signatureHex) throw new Error('Invalid signature response from node')
+    // Cinderella gateway: share nodes only sign events whose full JSON is attached.
+    if (groupPubkey(node) !== normalized.pubkey) throw new Error('Identity pubkey does not match the signing group')
+    const signed = await signEventWithPolicy(node, {
+      kind: normalized.kind,
+      created_at: normalized.created_at,
+      tags: normalized.tags,
+      content: normalized.content
+    }, getOpTimeoutMs())
+    if (!signed.ok) throw new Error(signed.reason)
+    if (signed.event.id !== eventId || !signed.event.sig) throw new Error('Invalid signature response from node')
 
     const signedEvent = {
       ...normalized,
       id: eventId,
-      sig: signatureHex
+      sig: signed.event.sig
     }
 
     return {

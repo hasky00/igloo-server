@@ -8,6 +8,8 @@ import {
   type NodeState
 } from './types.js';
 import { prepareNodePolicies, registerNodePolicyMetadata } from './policy.js';
+import { gatewayNodeOptions } from '../cinderella/gateway-node.js';
+import { close_node } from '../cinderella/resync.js';
 
 /**
  * Configuration for BifrostNode event logging
@@ -32,11 +34,12 @@ export function createBifrostNode(
     const decodedShare = PackageEncoder.share.decode(validatedConfig.share);
 
     const { peerConfigs, normalizedPolicies } = prepareNodePolicies(validatedConfig.policies);
-    const nodeOptions = peerConfigs.length ? { policies: peerConfigs } : undefined;
+    const nodeOptions = {
+      ...gatewayNodeOptions(),
+      ...(peerConfigs.length ? { policies: peerConfigs } : {})
+    };
 
-    const node = nodeOptions
-      ? new BifrostNode(decodedGroup, decodedShare, validatedConfig.relays, nodeOptions)
-      : new BifrostNode(decodedGroup, decodedShare, validatedConfig.relays);
+    const node = new BifrostNode(decodedGroup, decodedShare, validatedConfig.relays, nodeOptions);
 
     // Set up event handlers with optional logging
     setupNodeEvents(node, eventConfig);
@@ -364,7 +367,7 @@ export function closeNode(node: BifrostNode): void {
     };
 
     try {
-      attachErrorHandler(node.close());
+      attachErrorHandler(close_node(node)); // bifrost 2.0.2 close() rejects before closing the socket (bifrost#15)
     } catch (error: any) {
       restoreClientClose();
       throw new NodeError(
@@ -377,7 +380,7 @@ export function closeNode(node: BifrostNode): void {
   }
 
   try {
-    attachErrorHandler(node.close());
+    attachErrorHandler(close_node(node)); // bifrost 2.0.2 close() rejects before closing the socket (bifrost#15)
   } catch (error: any) {
     throw new NodeError(
       `Failed to close BifrostNode: ${error?.message ?? error}`,
@@ -488,9 +491,11 @@ export function cleanupBifrostNode(node: BifrostNode): void {
   if (!node) return;
 
   try {
-    // Use removeAllListeners if available (common in EventEmitter implementations)
+    // bifrost 2's emitter has clear_listeners(); older emitters had removeAllListeners().
     const nodeAsAny = node as any;
-    if (typeof nodeAsAny.removeAllListeners === 'function') {
+    if (typeof nodeAsAny.clear_listeners === 'function') {
+      nodeAsAny.clear_listeners();
+    } else if (typeof nodeAsAny.removeAllListeners === 'function') {
       nodeAsAny.removeAllListeners();
     } else {
       // If removeAllListeners is not available, try to clear listeners individually
@@ -498,12 +503,9 @@ export function cleanupBifrostNode(node: BifrostNode): void {
       console.warn('removeAllListeners not available - manual cleanup may be incomplete');
     }
 
-    // Safely close the connection
-    try {
-      node.close();
-    } catch (closeError) {
-      console.warn('Warning: Error during node.close():', closeError);
-    }
+    // Close the connection. bifrost 2.0.2's close() is async and rejects before
+    // closing the socket (bifrost#15); close_node() handles both and never rejects.
+    void close_node(node);
 
   } catch (error) {
     console.warn('Warning: Error during node cleanup:', error);

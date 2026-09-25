@@ -6,6 +6,16 @@ Looking to deploy quickly? Start with the one-click options in `docs/DEPLOY.md` 
 
 [▶ Watch the umbrel demo](https://plebdevs-bucket.nyc3.cdn.digitaloceanspaces.com/videos/random/igloo-server-umbrel-announcement.mp4)
 
+## Cinderella Gateway (this fork)
+
+This fork is the Gateway for [Cinderella](https://github.com/hasky00/cinderella): policy-aware threshold signing where every other share runs a Cinderella node that inspects the full event before contributing a partial signature.
+
+- **Signs full events only.** Each request attaches the event (hex-encoded JSON) so share nodes can check it against the sighash. `POST /api/sign` with a bare `message` hash returns `400 BLIND_SIGN_UNSUPPORTED`; `event.pubkey` must be the group pubkey.
+- **Refusals are silent.** A share node that refuses (kind not allowed, rate limit, delay gate) sends nothing back ([bifrost#13](https://github.com/FROSTR-ORG/bifrost/issues/13)), so `/api/sign` answers `504 SIGN_REFUSED_OR_UNREACHABLE` after `FROSTR_SIGN_TIMEOUT`, and NIP-46 returns the same message as an error.
+- **Send-only.** The Gateway never co-signs or answers ECDH for other members (`GATEWAY_SEND_ONLY`, default `true`), so a stolen share can't use it to skip the Cinderella nodes.
+- **bifrost 2.0.2, pinned.** igloo-core only supports bifrost 1, whose nodes can't talk to bifrost 2, so its helpers are ported in `src/frostr` (MIT). Existing bifrost 1 `bfgroup`/`bfshare` credentials still load, with the same group pubkey. Nonce pools are resynced after restarts ([bifrost#14](https://github.com/FROSTR-ORG/bifrost/issues/14)) by code in `src/cinderella` copied from the Cinderella repo.
+- **Startup echo goes to public relays.** Upstream behaviour: headless startup broadcasts the share echo to `RELAYS` plus the default echo relays (damus, primal). Set `SKIP_STARTUP_ECHO=true` to keep it to your own relays.
+
 ## What It Is
 - Threshold Schnorr signing for Nostr using your FROSTR shares (k‑of‑n). The full private key is never reconstructed.
 - Two modes: Database (multi‑user, encrypted creds, web UI) or Headless (env‑only, API‑first, no UI).

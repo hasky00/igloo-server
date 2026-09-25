@@ -43,11 +43,45 @@ function buildCrossSurfaceFixture() {
   };
 }
 
+type SignBatchOptions = { content?: string | null; type?: string; retries?: number };
+
+// Enough of a bifrost 2 node for cinderella_sign: group, peers, pool, events, sign_batch.
 type FakeSignNode = {
+  group: { group_pk: string; members: { idx: number; pubkey: string }[] };
+  peers: { pubkey: string; policy: { send: boolean; recv: boolean } }[];
+  pool: { can_sign: (idx: number) => boolean };
+  signer: { idx: number };
+  on: (event: string, fn: (...args: any[]) => void) => void;
+  off: (event: string, fn: (...args: any[]) => void) => void;
   req: {
-    sign: (id: string) => Promise<{ ok: boolean; data: any[] }>;
+    sign_batch: (vecs: string[][], options?: SignBatchOptions) => Promise<{ ok: boolean; data?: any[]; err?: string }>;
+    ping: (pubkey: string) => Promise<{ ok: boolean }>;
   };
 };
+
+const GROUP_PK = 'a'.repeat(64);
+
+function makeSignNode(signBatch: FakeSignNode['req']['sign_batch']): FakeSignNode {
+  return {
+    group: { group_pk: '02' + GROUP_PK, members: [{ idx: 1, pubkey: '02' + GROUP_PK }, { idx: 2, pubkey: '03' + 'b'.repeat(64) }] },
+    peers: [{ pubkey: 'b'.repeat(64), policy: { send: true, recv: false } }],
+    pool: { can_sign: () => true },
+    signer: { idx: 1 },
+    on: () => {},
+    off: () => {},
+    req: { sign_batch: signBatch, ping: async () => ({ ok: true }) },
+  };
+}
+
+function signRequest(body: unknown): Request {
+  return new Request('http://localhost/api/sign', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+const EVENT = { pubkey: GROUP_PK, kind: 1, created_at: 1_700_000_000, tags: [['t', 'x']], content: 'gm ✨' };
 
 type FakeECDHNode = {
   req: {
@@ -117,32 +151,77 @@ describe('API key-protected route handlers', () => {
     });
   }, { timeout: 8000 });
 
-  test('sign route returns signature when node succeeds', async () => {
+  test('sign route signs a full event, attaching it for the share nodes', async () => {
     process.env.NODE_ENV = 'test';
     process.env.AUTH_ENABLED = 'true';
     process.env.RATE_LIMIT_ENABLED = 'false';
 
     const { handleSignRoute } = await import(`../../src/routes/sign.ts?${Math.random()}`);
+    const { getEventHash } = await import('nostr-tools');
+    const expectedId = getEventHash(EVENT);
 
-    const node: FakeSignNode = {
-      req: {
-        sign: async (id: string) => ({ ok: true, data: [[id, 'stub', 'deadbeef'.repeat(16)]] }),
-      },
-    };
-
-    const context = makeContext(node);
-    const req = new Request('http://localhost/api/sign', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: '1'.repeat(64) }),
+    let seen: { vecs: string[][]; options?: SignBatchOptions } | null = null;
+    const node = makeSignNode(async (vecs, options) => {
+      seen = { vecs, options };
+      return { ok: true, data: [[vecs[0][0], GROUP_PK, 'deadbeef'.repeat(16)]] };
     });
 
-    const res = await handleSignRoute(req, new URL(req.url), context, { authenticated: true });
+    const res = await handleSignRoute(signRequest({ event: EVENT }), new URL('http://localhost/api/sign'), makeContext(node), { authenticated: true });
     expect(res.status).toBe(200);
     const body = await res.json();
+    expect(body.id).toBe(expectedId);
     expect(body.signature).toBe('deadbeef'.repeat(16));
-    expect(body.id).toBe('1'.repeat(64));
+
+    // The share nodes' contract: one sighash, the event attached as hex JSON, no retries.
+    expect(seen!.vecs).toEqual([[expectedId]]);
+    expect(seen!.options?.type).toBe('nostr-event');
+    expect(seen!.options?.retries).toBe(0);
+    const attached = JSON.parse(Buffer.from(seen!.options!.content!, 'hex').toString('utf8'));
+    expect(getEventHash(attached)).toBe(expectedId);
   }, { timeout: 10000 });
+
+  test('sign route refuses blind message hashes', async () => {
+    process.env.NODE_ENV = 'test';
+    process.env.AUTH_ENABLED = 'true';
+    process.env.RATE_LIMIT_ENABLED = 'false';
+
+    const { handleSignRoute } = await import(`../../src/routes/sign.ts?${Math.random()}`);
+    let called = false;
+    const node = makeSignNode(async () => { called = true; return { ok: false, err: 'unreachable' }; });
+
+    const res = await handleSignRoute(signRequest({ message: '1'.repeat(64) }), new URL('http://localhost/api/sign'), makeContext(node), { authenticated: true });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('BLIND_SIGN_UNSUPPORTED');
+    expect(called).toBe(false);
+  }, { timeout: 8000 });
+
+  test('sign route rejects events for a different pubkey', async () => {
+    process.env.NODE_ENV = 'test';
+    process.env.AUTH_ENABLED = 'true';
+    process.env.RATE_LIMIT_ENABLED = 'false';
+
+    const { handleSignRoute } = await import(`../../src/routes/sign.ts?${Math.random()}`);
+    const node = makeSignNode(async () => ({ ok: false, err: 'unreachable' }));
+
+    const res = await handleSignRoute(signRequest({ event: { ...EVENT, pubkey: 'c'.repeat(64) } }), new URL('http://localhost/api/sign'), makeContext(node), { authenticated: true });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain(GROUP_PK);
+  }, { timeout: 8000 });
+
+  test('sign route reports a silent refusal as refused-or-unreachable', async () => {
+    process.env.NODE_ENV = 'test';
+    process.env.AUTH_ENABLED = 'true';
+    process.env.RATE_LIMIT_ENABLED = 'false';
+
+    const { handleSignRoute } = await import(`../../src/routes/sign.ts?${Math.random()}`);
+    const node = makeSignNode(async () => ({ ok: false, err: 'request timed out' }));
+
+    const res = await handleSignRoute(signRequest({ event: { ...EVENT, kind: 0 } }), new URL('http://localhost/api/sign'), makeContext(node), { authenticated: true });
+    expect(res.status).toBe(504);
+    const body = await res.json();
+    expect(body.code).toBe('SIGN_REFUSED_OR_UNREACHABLE');
+    expect(body.error).toContain('refused by the signing policy');
+  }, { timeout: 8000 });
 
   test('sign route returns 503 when node unavailable', async () => {
     process.env.NODE_ENV = 'test';
