@@ -38,6 +38,44 @@ function getAuthSecret(auth: RequestAuth): { secret: string | Uint8Array; isDeri
 }
 
 /**
+ * Start the signer from saved credentials, or replace the running one.
+ * updateNode() stops the previous node and stores these credentials as the
+ * snapshot the watchdog restarts from — without that, a running signer kept
+ * its old share/relays, and every watchdog restart brought the old relays back.
+ * Call under executeUnderNodeLock.
+ */
+async function startSignerFromCredentials(
+  context: PrivilegedRouteContext,
+  userId: number | bigint,
+  credentials: UserCredentials,
+  logMessage: string
+): Promise<boolean> {
+  if (!credentials.group_cred || !credentials.share_cred) return false;
+  context.addServerLog('info', logMessage);
+  const peerPolicies = getUserPeerPolicies(userId);
+  const peerPoliciesJson = peerPolicies.length > 0 ? JSON.stringify(peerPolicies) : undefined;
+  const relaysEnv = credentials.relays?.length ? credentials.relays.join(',') : undefined;
+  const node = await createNodeWithCredentials(
+    credentials.group_cred,
+    credentials.share_cred,
+    relaysEnv,
+    context.addServerLog,
+    peerPoliciesJson
+  );
+  if (!node) return false;
+  context.updateNode(node, {
+    credentials: {
+      group: credentials.group_cred,
+      share: credentials.share_cred,
+      relaysEnv,
+      peerPoliciesRaw: peerPoliciesJson,
+      source: 'dynamic'
+    }
+  });
+  return true;
+}
+
+/**
  * Returns true when the provided string is a valid WebSocket URL.
  * Accepts only ws:// or wss:// protocols.
  */
@@ -305,6 +343,7 @@ export async function handleUserRoute(
           }
 
           const credentialsBeingUpdated = 'group_cred' in body || 'share_cred' in body;
+          const relaysBeingUpdated = 'relays' in body;
           
           const success = updateUserCredentials(
             userId,
@@ -373,33 +412,12 @@ export async function handleUserRoute(
                   context.addServerLog('warn', 'Failed to re-read credentials inside node lock', error);
                 }
 
-                if (!context.node && latestCredentials?.group_cred && latestCredentials?.share_cred) {
-                  context.addServerLog('info', 'Starting Bifrost node with saved credentials...');
-                  const peerPolicies = getUserPeerPolicies(userId!);
-                  const peerPoliciesJson = peerPolicies.length > 0 ? JSON.stringify(peerPolicies) : undefined;
-                  const groupCred = latestCredentials.group_cred;
-                  const shareCred = latestCredentials.share_cred;
-                  const relays = latestCredentials.relays;
-                  const relaysEnv = relays?.length ? relays.join(',') : undefined;
-
-                  const node = await createNodeWithCredentials(
-                    groupCred,
-                    shareCred,
-                    relaysEnv,
-                    context.addServerLog,
-                    peerPoliciesJson
-                  );
-                  if (node) {
-                    context.updateNode(node, {
-                      credentials: {
-                        group: groupCred,
-                        share: shareCred,
-                        relaysEnv,
-                        peerPoliciesRaw: peerPoliciesJson,
-                        source: 'dynamic'
-                      }
-                    });
-                  }
+                if (!latestCredentials?.group_cred || !latestCredentials?.share_cred) {
+                  // Nothing to start yet
+                } else if (!context.node) {
+                  await startSignerFromCredentials(context, userId!, latestCredentials, 'Starting Bifrost node with saved credentials...');
+                } else if (credentialsBeingUpdated || relaysBeingUpdated) {
+                  await startSignerFromCredentials(context, userId!, latestCredentials, 'Restarting signer to apply updated credentials/relays...');
                 } else {
                   context.addServerLog('info', 'Node already running, skipping restart');
                 }
@@ -524,8 +542,32 @@ export async function handleUserRoute(
             );
           }
 
+          // A running signer only picks up relays when it is restarted.
+          let applied = false;
+          if (context.node) {
+            const authSecret = getAuthSecret(auth);
+            if (authSecret) {
+              try {
+                await executeUnderNodeLock(async () => {
+                  const credentials = getUserCredentials(userId, authSecret.secret, authSecret.isDerivedKey);
+                  if (credentials && context.node) {
+                    applied = await startSignerFromCredentials(context, userId, credentials, 'Restarting signer to apply updated relays...');
+                  }
+                }, context);
+              } catch (error) {
+                context.addServerLog('error', 'Failed to restart signer after relay update', error);
+              }
+            } else {
+              context.addServerLog('warn', 'Relays saved; restart the signer to apply them (no session key to decrypt credentials)');
+            }
+          }
+
           return Response.json(
-            { success: true, message: 'Relays updated successfully' },
+            {
+              success: true,
+              message: applied ? 'Relays updated and applied to the running signer' : 'Relays updated successfully',
+              applied
+            },
             { headers }
           );
         }
