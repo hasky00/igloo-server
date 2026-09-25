@@ -17,11 +17,10 @@ import {
 } from '../db/nip46.js'
 import { logSessionEvent } from '../db/nip46.js'
 import { deriveNip44ConversationKey, deriveSharedSecret, xOnly } from '../routes/crypto-utils.js'
-import { getOpTimeoutMs } from '../routes/utils.js'
+import { getOpTimeoutMs, getValidRelays } from '../routes/utils.js'
 import { groupPubkey, signEventWithPolicy } from '../cinderella/sign-event.js'
 import { getEventHash, nip44 } from 'nostr-tools'
 
-const DEFAULT_RELAYS = ['wss://relay.primal.net']
 
 interface Nip46ServiceDeps {
   addServerLog: (type: string, message: string, data?: any) => void
@@ -419,8 +418,10 @@ export class Nip46Service {
   private async loadRelays(userId: number | bigint): Promise<string[]> {
     const stored = getNip46Relays(userId)
     if (stored.length > 0) return stored
-    setNip46Relays(userId, DEFAULT_RELAYS)
-    return [...DEFAULT_RELAYS]
+    // Default to the deployment's RELAYS (built-in default only if unset).
+    const defaults = getValidRelays()
+    setNip46Relays(userId, defaults)
+    return [...defaults]
   }
 
   private registerAgentListeners() {

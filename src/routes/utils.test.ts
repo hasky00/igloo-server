@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import { getValidRelays, normalizeRelayListForEcho } from './utils.js';
 
 async function withEnv<T>(key: string, value: string, fn: () => Promise<T> | T): Promise<T> {
@@ -137,5 +137,31 @@ describe('normalizeRelayListForEcho', () => {
     await withEnv('ALLOW_LOCALHOST_RELAY', 'true', () => {
       expect(normalizeRelayListForEcho(['ws://[::ffff:127.0.0.1]:18002'])).toEqual(['ws://[::ffff:127.0.0.1]:18002']);
     });
+  });
+});
+
+describe('getValidRelays fallback', () => {
+  const saved = process.env.RELAYS;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.RELAYS;
+    else process.env.RELAYS = saved;
+  });
+
+  it('falls back to the deployment RELAYS before the built-in default', () => {
+    process.env.RELAYS = '["wss://hasky.example"]';
+    expect(getValidRelays(undefined)).toEqual(['wss://hasky.example']);
+    expect(getValidRelays('')).toEqual(['wss://hasky.example']);
+  });
+
+  it('uses the built-in default only when RELAYS is unset or invalid', () => {
+    delete process.env.RELAYS;
+    expect(getValidRelays(undefined)).toEqual(['wss://relay.primal.net']);
+    process.env.RELAYS = 'not-a-relay';
+    expect(getValidRelays(undefined)).toEqual(['wss://relay.primal.net']);
+  });
+
+  it('still prefers explicitly passed relays', () => {
+    process.env.RELAYS = '["wss://hasky.example"]';
+    expect(getValidRelays('wss://explicit.example')).toEqual(['wss://explicit.example']);
   });
 });
