@@ -135,7 +135,7 @@ describe('User & Peers routes', () => {
         fs.writeFileSync(path.join(tmpDir, 'data'), 'block-fallback-directory');
 
         const peers = await import(root + 'src/routes/peers.ts');
-        const { getNodePolicy, setNodePolicies } = await import(root + 'node_modules/@frostr/igloo-core/dist/index.js');
+        const { getNodePolicy, setNodePolicies } = await import(root + 'src/frostr/index.ts');
         const pubkey = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
         const context = {
@@ -206,7 +206,7 @@ describe('User & Peers routes', () => {
         fs.writeFileSync(path.join(tmpDir, 'data'), 'block-fallback-directory');
 
         const peers = await import(root + 'src/routes/peers.ts');
-        const { getNodePolicy, setNodePolicies } = await import(root + 'node_modules/@frostr/igloo-core/dist/index.js');
+        const { getNodePolicy, setNodePolicies } = await import(root + 'src/frostr/index.ts');
         const pubkey = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
         const context = {
@@ -273,7 +273,7 @@ describe('User & Peers routes', () => {
       fs.writeFileSync(path.join(tmpDir, 'data'), 'block-fallback-directory');
 
       const peers = await import(root + 'src/routes/peers.ts');
-      const { getNodePolicy, setNodePolicies } = await import(root + 'node_modules/@frostr/igloo-core/dist/index.js');
+      const { getNodePolicy, setNodePolicies } = await import(root + 'src/frostr/index.ts');
       const pubkeyA = 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
       const pubkeyB = 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
 
@@ -355,7 +355,7 @@ describe('User & Peers routes', () => {
       fs.writeFileSync(path.join(tmpDir, 'data'), 'block-fallback-directory');
 
       const peers = await import(root + 'src/routes/peers.ts');
-      const { getNodePolicy, setNodePolicies } = await import(root + 'node_modules/@frostr/igloo-core/dist/index.js');
+      const { getNodePolicy, setNodePolicies } = await import(root + 'src/frostr/index.ts');
       const pubkeyA = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
       const pubkeyB = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
 

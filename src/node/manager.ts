@@ -9,9 +9,9 @@ import {
   cleanupBifrostNode,
   DEFAULT_ECHO_RELAYS,
   decodeGroup
-} from '@frostr/igloo-core';
+} from '../frostr/index.js';
 import { finalize_message } from '@cmdcode/nostr-p2p/lib';
-import type { NodePolicyInput, NodeEventConfig, EnhancedNodeConfig } from '@frostr/igloo-core';
+import type { NodePolicyInput, NodeEventConfig, EnhancedNodeConfig } from '../frostr/index.js';
 import { randomBytes } from 'crypto';
 import type { ServerBifrostNode, PeerStatus, PingResult } from '../routes/types.js';
 import { getValidRelays, safeStringify, getOpTimeoutMs } from '../routes/utils.js';

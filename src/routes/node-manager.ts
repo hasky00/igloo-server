@@ -1,4 +1,4 @@
-import { createConnectedNode, createAndConnectNode } from '@frostr/igloo-core';
+import { createConnectedNode, createAndConnectNode } from '../frostr/index.js';
 import { PrivilegedRouteContext, ServerBifrostNode } from './types.js';
 import { getValidRelays } from './utils.js';
 import { executeUnderNodeLock } from '../utils/node-lock.js';

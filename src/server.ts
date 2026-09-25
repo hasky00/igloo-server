@@ -1,6 +1,6 @@
 import { serve, type ServerWebSocket, type WebSocketHandler } from 'bun';
 import { randomUUID } from 'crypto';
-import { cleanupBifrostNode } from '@frostr/igloo-core';
+import { cleanupBifrostNode } from './frostr/index.js';
 import { NostrRelay } from './class/relay.js';
 import * as CONST from './const.js';
 import { 
