@@ -89,8 +89,17 @@ export function getValidRelays(
   envRelays?: string,
   options?: { fallbackToDefault?: boolean }
 ): string[] {
-  // Use single default relay as requested
-  const defaultRelays = ['wss://relay.primal.net'];
+  // Fallback: the deployment's RELAYS, then the built-in default. Without the
+  // first step a user or NIP-46 relay list left empty in database mode silently
+  // used a public relay, whatever RELAYS said.
+  const defaultRelays = (() => {
+    const deployment = process.env.RELAYS;
+    if (deployment && deployment !== envRelays) {
+      const parsed = getValidRelays(deployment, { fallbackToDefault: false });
+      if (parsed.length > 0) return parsed;
+    }
+    return ['wss://relay.primal.net'];
+  })();
   const fallbackToDefault = options?.fallbackToDefault ?? true;
   
   if (!envRelays) {
