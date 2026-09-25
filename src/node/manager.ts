@@ -14,7 +14,7 @@ import type { NodePolicyInput, NodeEventConfig, EnhancedNodeConfig } from '../fr
 import { randomBytes } from 'crypto';
 import type { ServerBifrostNode, PeerStatus, PingResult } from '../routes/types.js';
 import { getValidRelays, safeStringify, getOpTimeoutMs } from '../routes/utils.js';
-import { SKIP_RELAY_PROBE, DEFER_RELAY_PROBE, MAX_PEER_STATUS_ENTRIES } from '../const.js';
+import { SKIP_RELAY_PROBE, DEFER_RELAY_PROBE, MAX_PEER_STATUS_ENTRIES, SKIP_STARTUP_ECHO } from '../const.js';
 import { loadFallbackPeerPolicies } from './peer-policy-store.js';
 import { mergePolicyInputs } from '../util/peer-policy.js';
 import type { ServerWebSocket } from 'bun';
@@ -1768,6 +1768,13 @@ export async function sendSelfEcho(
   if (!groupCred || !shareCred) {
     return false;
   }
+  // SKIP_STARTUP_ECHO turns off every credential echo, not just the one at
+  // startup: the broadcast also goes to public default relays, and bifrost 1
+  // Igloo clients (the handoff it served) can't read a bifrost 2 echo anyway.
+  if (SKIP_STARTUP_ECHO) {
+    options?.addServerLog?.('debug', `Credential echo skipped (SKIP_STARTUP_ECHO)${options?.contextLabel ? ` (${options.contextLabel})` : ''}`);
+    return false;
+  }
 
   const {
     relays,
@@ -1938,6 +1945,13 @@ export async function broadcastShareEcho(
   }
 ): Promise<boolean> {
   if (!groupCred || !shareCred) {
+    return false;
+  }
+  // SKIP_STARTUP_ECHO turns off every credential echo, not just the one at
+  // startup: the broadcast also goes to public default relays, and bifrost 1
+  // Igloo clients (the handoff it served) can't read a bifrost 2 echo anyway.
+  if (SKIP_STARTUP_ECHO) {
+    options?.addServerLog?.('debug', `Credential echo skipped (SKIP_STARTUP_ECHO)${options?.contextLabel ? ` (${options.contextLabel})` : ''}`);
     return false;
   }
 
