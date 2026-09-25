@@ -9,7 +9,7 @@ import {
 } from './types.js';
 import { prepareNodePolicies, registerNodePolicyMetadata } from './policy.js';
 import { gatewayNodeOptions } from '../cinderella/gateway-node.js';
-import { close_node } from '../cinderella/resync.js';
+import { close_node, single_flight_pings } from '../cinderella/resync.js';
 
 /**
  * Configuration for BifrostNode event logging
@@ -40,6 +40,9 @@ export function createBifrostNode(
     };
 
     const node = new BifrostNode(decodedGroup, decodedShare, validatedConfig.relays, nodeOptions);
+    // One ping per peer in flight: the keepalive ping and a signature's nonce
+    // refill must not both trigger a resync on the share node (see resync.ts).
+    single_flight_pings(node);
 
     // Set up event handlers with optional logging
     setupNodeEvents(node, eventConfig);
