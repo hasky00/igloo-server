@@ -25,7 +25,8 @@ services:
     tty: true
 
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8002/api/status || exit 1"]
+      # The oven/bun image has no wget/curl; use bun itself. 127.0.0.1, not localhost (resolves to ::1).
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:8002/api/status').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3
