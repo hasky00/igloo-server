@@ -309,13 +309,6 @@ export class Nip46Service {
       }
     }
 
-    const secret = typeof invite?.secret === 'string' && invite.secret.length > 0 ? invite.secret : 'ack'
-    try {
-      await this.agent.socket.send({ id: invite?.secret ?? null, result: secret }, normalizedPubkey)
-    } catch (error) {
-      this.log('warn', 'Failed to send connect acknowledgement', { error: this.serializeError(error) })
-    }
-
     const profileName = typeof invite?.profile?.name === 'string' ? invite.profile.name : (typeof invite?.name === 'string' ? invite.name : undefined)
     const profileUrl = typeof invite?.profile?.url === 'string' ? invite.profile.url : (typeof invite?.url === 'string' ? invite.url : undefined)
     const profileImage = typeof invite?.profile?.image === 'string' ? invite.profile.image : (typeof invite?.image === 'string' ? invite.image : undefined)
@@ -341,6 +334,17 @@ export class Nip46Service {
       this.log('error', 'Failed to persist NIP-46 session from connect string', { error: this.serializeError(error) })
       throw new Error('Failed to persist session for invite')
     }
+
+    // Ack only after the pending session is stored: the client answers the ack
+    // at once, its first request marks the session active, and a later
+    // 'pending' upsert here would overwrite that (session stuck at PENDING).
+    const secret = typeof invite?.secret === 'string' && invite.secret.length > 0 ? invite.secret : 'ack'
+    try {
+      await this.agent.socket.send({ id: invite?.secret ?? null, result: secret }, normalizedPubkey)
+    } catch (error) {
+      this.log('warn', 'Failed to send connect acknowledgement', { error: this.serializeError(error) })
+    }
+
 
     this.broadcast('nip46:session_pending', 'NIP-46 session created', {
       session: session.client_pubkey,
@@ -472,6 +476,13 @@ export class Nip46Service {
 
     if (req.method === 'ping') {
       await this.sendSocketResponse(req, pubkey, { result: 'pong' })
+      return
+    }
+
+    // NIP-46 switch_relays: clients (welshman/Coracle) call it right after
+    // connecting and abort the login on an error. "null" = keep current relays.
+    if (req.method === 'switch_relays') {
+      await this.sendSocketResponse(req, pubkey, { result: 'null' })
       return
     }
 

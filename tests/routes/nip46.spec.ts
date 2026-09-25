@@ -911,3 +911,61 @@ describe('NIP-46 nip44 RPC standards-compliant interop', () => {
     expect(sad!.hasResult).toBe(false);
   });
 });
+
+describe('NIP-46 nostrconnect login (welshman / Coracle)', () => {
+  // Shared setup: DB with one user, service "started" with a fake socket that
+  // records what is sent. No relay connections.
+  const setup = `
+      const root = ${JSON.stringify(PROJECT_ROOT)};
+      process.env.NODE_ENV = 'test';
+      process.env.HEADLESS = 'false';
+      const database = await import(root + 'src/db/database.ts');
+      const nip46 = await import(root + 'src/db/nip46.ts');
+      await nip46.initializeNip46DB();
+      database.default.exec("INSERT INTO users (username, password_hash, salt) VALUES ('nip46-login', 'hash', 'salt')");
+      const { Nip46Service } = await import(root + 'src/nip46/service.ts');
+      const service = new Nip46Service({ addServerLog: () => {}, broadcastEvent: () => {}, getNode: () => null });
+      const sent = [];
+      service.activeUserId = 1;
+      service.started = true;
+      service.agent = { socket: { subscribe: async () => {}, send: async (msg, pk) => { sent.push({ msg, pk }); await onSend(msg, pk); } } };
+      let onSend = async () => {};
+      const client = 'e'.repeat(64);
+      const status = () => database.default.query('SELECT status FROM nip46_sessions WHERE client_pubkey = ?').get(client)?.status ?? null;
+      const queued = () => database.default.query('SELECT COUNT(*) AS n FROM nip46_requests').get().n;
+  `;
+
+  test('switch_relays is answered at once with null (keep relays), not queued', () => {
+    const script = setup + `
+      await service.handleSocketRequest({ id: 'sr-1', method: 'switch_relays', params: [], session: { pubkey: client } });
+      const result = { sent: sent.map((s) => s.msg), queued: queued() };
+      try { await database.closeDatabase(); } catch {}
+      console.log('@@RESULT@@' + JSON.stringify(result));
+      process.exit(0);
+    `;
+    const out = runRouteScript<{ sent: unknown[]; queued: number }>(script);
+    expect(out.sent).toEqual([{ id: 'sr-1', result: 'null' }]);
+    expect(out.queued).toBe(0);
+  });
+
+  test('a client answering the ack immediately leaves the session active, not pending', () => {
+    const script = setup + `
+      // Like Coracle: the moment the ack arrives, the client sends switch_relays.
+      onSend = async (msg, pk) => {
+        if (msg.result === 'sekret') {
+          await service.handleSocketRequest({ id: 'sr-2', method: 'switch_relays', params: [], session: { pubkey: pk } });
+        }
+      };
+      const uri = 'nostrconnect://' + client + '?relay=' + encodeURIComponent('wss://relay.example') + '&secret=sekret&name=Coracle';
+      await service.connectFromUri(1, uri);
+      const result = { status: status(), sent: sent.map((s) => s.msg) };
+      try { await database.closeDatabase(); } catch {}
+      console.log('@@RESULT@@' + JSON.stringify(result));
+      process.exit(0);
+    `;
+    const out = runRouteScript<{ status: string; sent: unknown[] }>(script);
+    expect(out.sent).toContainEqual({ id: 'sekret', result: 'sekret' });
+    expect(out.sent).toContainEqual({ id: 'sr-2', result: 'null' });
+    expect(out.status).toBe('active');
+  });
+});
