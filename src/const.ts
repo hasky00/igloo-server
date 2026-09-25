@@ -116,8 +116,9 @@ export const DEFER_RELAY_PROBE = (() => {
   return normalized === 'true' || normalized === '1' || normalized === 'yes';
 })();
 
-// Skip startup echo broadcasts for faster cold start (perf optimization 5.2)
-// When true, skips sendSelfEcho and broadcastShareEcho at headless startup
+// Skip credential echo broadcasts (perf optimization 5.2). When true, skips
+// sendSelfEcho and broadcastShareEcho everywhere: at headless startup and after
+// credentials are saved. Those broadcasts also reach public default relays.
 export const SKIP_STARTUP_ECHO = (() => {
   const value = process.env['SKIP_STARTUP_ECHO'];
   if (!value) return false;
