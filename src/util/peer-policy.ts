@@ -1,4 +1,4 @@
-import type { NodePolicyInput } from '@frostr/igloo-core'
+import type { NodePolicyInput } from '../frostr/index.js'
 
 export interface PeerPolicyRecord {
   pubkey: string

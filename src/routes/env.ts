@@ -17,7 +17,7 @@ import {
 import { hasCredentials, HEADLESS, ADMIN_SECRET } from '../const.js';
 import { createNodeWithCredentials, sendSelfEcho, broadcastShareEcho } from '../node/manager.js';
 import { executeUnderNodeLock, cleanupNodeSynchronized } from '../utils/node-lock.js';
-import { validateShare, validateGroup } from '@frostr/igloo-core';
+import { validateShare, validateGroup } from '../frostr/index.js';
 import { AUTH_CONFIG, checkRateLimit } from './auth.js';
 import { validateAdminSecret } from './onboarding.js';
 import { getUserCredentials, getUserById } from '../db/database.js';

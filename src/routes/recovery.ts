@@ -4,7 +4,7 @@ import {
   recoverSecretKeyFromCredentials,
   validateGroup,
   validateShare
-} from '@frostr/igloo-core';
+} from '../frostr/index.js';
 import { RouteContext, RequestAuth } from './types.js';
 import { getSecureCorsHeaders, mergeVaryHeaders, parseJsonRequestBody, isContentLengthWithin, DEFAULT_MAX_JSON_BODY } from './utils.js';
 import { authenticate, AUTH_CONFIG, checkRateLimit } from './auth.js';
@@ -205,7 +205,7 @@ export async function handleRecoveryRoute(req: Request, url: URL, context: Route
                   const groupDecoded = decodeGroup(credential);
                   decodedResult = {
                     threshold: groupDecoded.threshold,
-                    totalShares: groupDecoded.commits?.length,
+                    totalShares: groupDecoded.members?.length,
                     idx: undefined
                   };
                 } catch (error) {

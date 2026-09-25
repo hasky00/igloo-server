@@ -9,10 +9,10 @@ import {
   getNodePolicy,
   canSendToPeer,
   canReceiveFromPeer
-} from '@frostr/igloo-core';
+} from '../frostr/index.js';
 import { Buffer } from 'node:buffer';
 import { RouteContext, PeerStatus, RequestAuth } from './types.js';
-import type { NodePolicyInput, NodePolicySummary } from '@frostr/igloo-core';
+import type { NodePolicyInput, NodePolicySummary } from '../frostr/index.js';
 import { readEnvFile, getSecureCorsHeaders, mergeVaryHeaders, parseJsonRequestBody } from './utils.js';
 import { HEADLESS } from '../const.js';
 import { saveFallbackPeerPolicies } from '../node/peer-policy-store.js';
@@ -426,7 +426,7 @@ export async function handlePeersRoute(req: Request, url: URL, context: RouteCon
             }
             // Strip 02/03 compression prefix if present to return x-only pubkey
             const pubkey = (hex.length === 66 && (hex.startsWith('02') || hex.startsWith('03'))) ? hex.slice(2) : hex;
-            return Response.json({ pubkey, threshold: decoded.threshold, totalShares: decoded.commits.length }, { headers });
+            return Response.json({ pubkey, threshold: decoded.threshold, totalShares: decoded.members.length }, { headers });
           } catch (e) {
             return Response.json({ error: 'Failed to decode group credential' }, { status: 400, headers });
           }
@@ -445,7 +445,7 @@ export async function handlePeersRoute(req: Request, url: URL, context: RouteCon
           try {
             // Use igloo-core function to decode group and extract peers
             const decodedGroup = decodeGroup(credentials.group_cred);
-            const allPeers = decodedGroup.commits.map(commit => commit.pubkey);
+            const allPeers = decodedGroup.members.map(member => member.pubkey);
             
             // Filter out self if we have share credential
             let filteredPeers = allPeers;
@@ -796,7 +796,7 @@ async function handlePingAllPeers(context: RouteContext, headers: Record<string,
   try {
     // Use igloo-core function to decode group and extract peers
     const decodedGroup = decodeGroup(credentials.group_cred);
-    let allPeers = decodedGroup.commits.map(commit => commit.pubkey);
+    let allPeers = decodedGroup.members.map(member => member.pubkey);
     
     // Filter out self if we have share credential
     if (credentials.share_cred) {

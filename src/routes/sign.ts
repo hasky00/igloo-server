@@ -1,7 +1,8 @@
 import type { RouteContext, RequestAuth } from './types.js';
-import { getSecureCorsHeaders, mergeVaryHeaders, getOpTimeoutMs, withTimeout } from './utils.js';
+import { getSecureCorsHeaders, mergeVaryHeaders, getOpTimeoutMs } from './utils.js';
 import { checkRateLimit } from './auth.js';
 import { getEventHash, type EventTemplate, type UnsignedEvent } from 'nostr-tools';
+import { groupPubkey, signEventWithPolicy } from '../cinderella/sign-event.js';
 
 type SignRequestBody = {
   message?: string; // 32-byte hex event id
@@ -19,7 +20,7 @@ function normalizeHex(input: string): string | null {
   return /^[0-9a-f]+$/.test(hex) ? hex : null;
 }
 
-function computeEventId(body: SignRequestBody): { id: string } | { error: string } {
+function computeEventId(body: SignRequestBody): { id: string; template?: UnsignedEvent } | { error: string } {
   if (body.message) {
     const hex = normalizeHex(body.message);
     if (!hex || hex.length !== 64) return { error: 'Invalid message: expected 32-byte hex event id' };
@@ -74,7 +75,7 @@ function computeEventId(body: SignRequestBody): { id: string } | { error: string
         tags: validatedTags,
       };
       const id = getEventHash(template);
-      return { id };
+      return { id, template };
     } catch (e) {
       return { error: 'Invalid event: could not compute id' };
     }
@@ -194,73 +195,51 @@ export async function handleSignRoute(req: Request, url: URL, context: RouteCont
     return Response.json({ code: 'INVALID_JSON', error: 'Invalid JSON' }, { status: 400, headers });
   }
 
+  // Cinderella gateway: share nodes refuse blind hashes, so only full events can be signed.
+  if (body.message && !body.event) {
+    return Response.json({
+      code: 'BLIND_SIGN_UNSUPPORTED',
+      error: 'This signer only signs full events: send `event` instead of a bare `message` hash'
+    }, { status: 400, headers });
+  }
+
   const result = computeEventId(body);
   if ('error' in result) return Response.json({ code: 'BAD_REQUEST', error: result.error }, { status: 400, headers });
-  const { id } = result;
+  const { id, template } = result;
+  if (!template) {
+    return Response.json({ code: 'BAD_REQUEST', error: 'Request must include `event`' }, { status: 400, headers });
+  }
+
+  const node = context.node!;
+  const expectedPubkey = groupPubkey(node);
+  if (template.pubkey !== expectedPubkey) {
+    return Response.json({
+      code: 'BAD_REQUEST',
+      error: `Invalid event: pubkey must be this signer's group pubkey (${expectedPubkey})`
+    }, { status: 400, headers });
+  }
 
   try {
-    // Bifrost sign request returns { ok, data: SignatureEntry[] }
     const timeoutMs = getOpTimeoutMs();
-    const rawSignPromise = context.node!.req.sign(id);
-    const safeSignPromise = rawSignPromise
-      .then((res: any) => res)
-      .catch((error: unknown) => ({ ok: false, err: error instanceof Error ? error.message : String(error) }));
+    const signed = await signEventWithPolicy(node, {
+      kind: template.kind,
+      created_at: template.created_at,
+      tags: template.tags,
+      content: template.content
+    }, timeoutMs);
 
-    let signResult;
-    try {
-      signResult = await withTimeout(safeSignPromise, timeoutMs, 'SIGN_TIMEOUT');
-    } catch (error) {
-      const reason = normalizeErrorReason(error);
-      if (isTimeoutReason(reason)) {
-        try { context.addServerLog('warning', 'Signing operation timed out', { id, timeoutMs, source: 'bifrost' }); } catch {}
-        return Response.json({ code: 'SIGN_TIMEOUT', error: `Signing timed out after ${timeoutMs}ms` }, { status: 504, headers: { ...headers, 'Retry-After': Math.ceil(timeoutMs / 1000).toString() } });
+    if (!signed.ok) {
+      if (signed.code === 'SIGN_REFUSED_OR_UNREACHABLE') {
+        try { context.addServerLog('warning', 'Signing refused or timed out', { id, kind: template.kind, timeoutMs }); } catch {}
+        return Response.json({ code: signed.code, error: signed.reason }, { status: 504, headers });
       }
-      try { context.addServerLog('error', 'Signing operation failed', { id, reason }); } catch {}
-      return Response.json({ code: 'SIGN_FAILED', error: reason }, { status: 502, headers });
+      try { context.addServerLog('error', 'Signing operation failed', { id, reason: signed.reason }); } catch {}
+      return Response.json({ code: 'SIGN_FAILED', error: signed.reason }, { status: 502, headers });
     }
 
-    if (!signResult || signResult.ok !== true) {
-      const rawReason = signResult && (signResult.err ?? (signResult as any).error);
-      const reason = normalizeErrorReason(rawReason ?? 'signing failed');
-      if (isTimeoutReason(reason)) {
-        try { context.addServerLog('warning', 'Signing operation timed out', { id, timeoutMs, source: 'response' }); } catch {}
-        return Response.json({ code: 'SIGN_TIMEOUT', error: `Signing timed out after ${timeoutMs}ms` }, { status: 504, headers: { ...headers, 'Retry-After': Math.ceil(timeoutMs / 1000).toString() } });
-      }
-      try { context.addServerLog('error', 'Signing operation failed', { id, reason }); } catch {}
-      return Response.json({ code: 'SIGN_FAILED', error: reason }, { status: 502, headers });
-    }
-
-    // Expect an array like: [[sighash, pubkey, signature]]
-    let signatureHex: string | null = null;
-    try {
-      if (Array.isArray(signResult.data)) {
-        const entry = signResult.data.find((e: unknown) => Array.isArray(e) && e[0] === id) || signResult.data[0];
-        signatureHex = Array.isArray(entry) ? entry[2] : null;
-      }
-    } catch (error) {
-      try {
-        context.addServerLog('error', 'Error extracting signature', {
-          id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      } catch {
-        try { console.error('Error extracting signature:', error); } catch {}
-      }
-    }
-
-    if (typeof signatureHex === 'string' && signatureHex.startsWith('0x')) {
-      signatureHex = signatureHex.slice(2);
-    }
-    if (!signatureHex || !/^[0-9a-fA-F]{128}$/.test(signatureHex)) {
-      try {
-        context.addServerLog('error', 'Invalid signature format', { id, signature: signatureHex });
-      } catch {
-        try { console.error('Invalid signature format', id, signatureHex); } catch {}
-      }
-      signatureHex = null;
-    }
-
-    if (!signatureHex) {
+    const signatureHex = signed.event.sig ?? null;
+    if (signed.event.id !== id || !signatureHex || !/^[0-9a-fA-F]{128}$/.test(signatureHex)) {
+      try { context.addServerLog('error', 'Invalid signature response', { id, got: signed.event.id }); } catch {}
       return Response.json({ code: 'INVALID_NODE_RESPONSE', error: 'invalid signature response from node' }, { status: 502, headers });
     }
 

@@ -7,16 +7,10 @@ import { EventLog, type LogEntryData } from "./EventLog"
 import { Input } from "./ui/input"
 import PeerList from "./ui/peer-list"
 import Spinner from "./ui/spinner"
-// Import real igloo-core functions
-import { 
-  validateShare, 
-  validateGroup, 
-  decodeShare, 
-  decodeGroup, 
-  createConnectedNode,
-  getShareDetailsWithGroup,
-  cleanupBifrostNode
-} from '@frostr/igloo-core'
+// FROSTR helpers ported from igloo-core to bifrost 2 (see src/frostr)
+import { validateShare, validateGroup } from '../../src/frostr/validation.js'
+import { decodeShare, decodeGroup } from '../../src/frostr/keyset.js'
+import { cleanupBifrostNode } from '../../src/frostr/node.js'
 // Import types from shared types file
 import type { SignerHandle, SignerProps } from '../types'
 
@@ -118,8 +112,8 @@ function performDeepGroupValidation(groupCredential: string): boolean {
     return !!(
       typeof decodedGroup.threshold === 'number' &&
       groupPkOk &&
-      Array.isArray(decodedGroup.commits) &&
-      decodedGroup.commits.length > 0
+      Array.isArray(decodedGroup.members) &&
+      decodedGroup.members.length > 0
     )
   } catch {
     return false
@@ -135,16 +129,16 @@ const getShareInfo = (groupCredential: string, shareCredential: string, shareNam
     const decodedGroup = decodeGroup(groupCredential);
     const decodedShare = decodeShare(shareCredential);
 
-    // Find the corresponding commit in the group
-    const commit = decodedGroup.commits.find((c: any) => c.idx === decodedShare.idx);
+    // Find the corresponding member in the group
+    const member = decodedGroup.members.find((m: any) => m.idx === decodedShare.idx);
 
-    if (commit) {
+    if (member) {
       return {
         index: decodedShare.idx,
-        pubkey: realPubkey || commit.pubkey, // Use real pubkey if available, otherwise use commit pubkey
+        pubkey: realPubkey || member.pubkey, // Use real pubkey if available, otherwise the group member pubkey
         shareName: shareName || `Share ${decodedShare.idx}`,
         threshold: decodedGroup.threshold,
-        totalShares: decodedGroup.commits.length
+        totalShares: decodedGroup.members.length
       };
     }
 

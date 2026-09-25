@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-Igloo Server is a threshold Schnorr signing server for Nostr using the FROSTR protocol. It provides an always-on signing node with k-of-n threshold signatures where the full private key is never reconstructed. Built on `@frostr/igloo-core` and `@frostr/bifrost`.
+Igloo Server is a threshold Schnorr signing server for Nostr using the FROSTR protocol. It provides an always-on signing node with k-of-n threshold signatures where the full private key is never reconstructed. Built on `@frostr/bifrost` 2.0.2 (pinned), with igloo-core's helpers ported to `src/frostr`. This fork is the Cinderella Gateway: see the README section and `src/cinderella/`.
 
 Two operational modes:
 - **Database mode** (default): Multi-user, SQLite persistence, web UI, session/API key auth
