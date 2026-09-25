@@ -1,4 +1,4 @@
-// Copied from hasky00/cinderella@ce31916 (src/resync.ts, PR #8). Keep in sync with the source;
+// Copied from hasky00/cinderella@852069e (src/resync.ts). Keep in sync with the source;
 // the share nodes there enforce the other side of this contract.
 
 /**
