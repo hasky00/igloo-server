@@ -25,6 +25,7 @@ interface EcdhResult {
   ok: boolean;
   data?: string | Buffer | Uint8Array;
   error?: string;
+  err?: string; // bifrost 2 reports failures as `err`
 }
 
 /**
@@ -57,7 +58,7 @@ export async function deriveSharedSecret(
 
   const result: EcdhResult = await withTimeout(node.req.ecdh(normalizedPeer), timeoutMs, 'ECDH_TIMEOUT');
   if (!result || result.ok !== true) {
-    throw new Error(result?.error || 'ecdh failed');
+    throw new Error(result?.err || result?.error || 'ecdh failed');
   }
 
   // Normalize ECDH result to 32-byte lowercase hex (minimal, robust)

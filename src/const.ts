@@ -94,7 +94,7 @@ export const SKIP_ADMIN_SECRET_VALIDATION = (() => {
 })();
 
 // Skip relay probing during node creation for faster startup (perf optimization 3.1)
-// When true, uses all configured relays without testing kind 20004 support
+// When true, uses all configured relays without testing FROSTR RPC kind support
 export const SKIP_RELAY_PROBE = (() => {
   const value = process.env['SKIP_RELAY_PROBE'];
   if (!value) return false;

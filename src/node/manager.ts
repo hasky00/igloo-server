@@ -10,7 +10,6 @@ import {
   DEFAULT_ECHO_RELAYS,
   decodeGroup
 } from '../frostr/index.js';
-import { finalize_message } from '@cmdcode/nostr-p2p/lib';
 import type { NodePolicyInput, NodeEventConfig, EnhancedNodeConfig } from '../frostr/index.js';
 import { randomBytes } from 'crypto';
 import type { ServerBifrostNode, PeerStatus, PingResult } from '../routes/types.js';
@@ -139,51 +138,6 @@ async function withSimplePoolSubscribeManyLock<T>(fn: () => Promise<T>): Promise
   } finally {
     release?.();
   }
-}
-
-async function respondToEchoRequest(node: ServerBifrostNode, msg: any): Promise<boolean> {
-  const requesterPubkey = msg?.env?.pubkey;
-  if (typeof requesterPubkey !== 'string' || requesterPubkey.trim().length === 0) {
-    throw new Error('Echo request missing requester pubkey');
-  }
-  const trimmedPubkey = requesterPubkey.trim();
-
-  const peerCollections = [
-    (node as any)?._peers,
-    (node as any)?.peers
-  ];
-
-  let peerData: any | undefined;
-  for (const collection of peerCollections) {
-    if (!Array.isArray(collection)) continue;
-    const matched = collection.find((entry: any) => entry?.pubkey === trimmedPubkey);
-    if (matched) {
-      peerData = matched;
-      break;
-    }
-  }
-
-  if (!peerData) {
-    return false;
-  }
-
-  const echoIdSource = typeof msg?.id === 'string' ? msg.id.trim() : '';
-  const echoId = echoIdSource.length > 0 ? echoIdSource : randomBytes(16).toString('hex');
-
-  const policyPayload = peerData?.policy ?? { send: true, recv: true };
-  const envelope = finalize_message({
-    data: JSON.stringify(policyPayload),
-    id: echoId,
-    tag: '/echo/res'
-  });
-
-  const publishResult = await (node as any).client.publish(envelope, trimmedPubkey);
-  if (!publishResult?.ok) {
-    const reason = publishResult?.reason ?? publishResult?.error ?? 'failed to publish echo response';
-    throw new Error(typeof reason === 'string' ? reason : JSON.stringify(reason));
-  }
-
-  return true;
 }
 
 // Publish failure metrics tracking
@@ -683,13 +637,17 @@ interface BackgroundProbeResult {
   filteredRelays: string[];
   timestamp: number;
 }
+// Event kind bifrost uses for FROSTR RPC. bifrost 1 (via nostr-p2p) used 20004;
+// bifrost 2 (via @vbyte/nostr-sdk) uses 20000. Relays are probed for this kind.
+const FROSTR_RPC_KIND = 20000;
+
 let lastBackgroundProbeResult: BackgroundProbeResult | null = null;
 
 // Quick relay capability probe: keep relays that accept the given kind.
 // Uses an ephemeral keypair and a tiny, throwaway event, and closes connections immediately.
 export async function filterRelaysForKindSupport(
   relays: string[],
-  kind: number = 20004,
+  kind: number = FROSTR_RPC_KIND,
   addServerLog?: ReturnType<typeof createAddServerLog>
 ): Promise<string[]> {
   if (!Array.isArray(relays) || relays.length === 0) return [];
@@ -734,7 +692,7 @@ export async function filterRelaysForKindSupport(
  */
 async function runBackgroundRelayProbe(
   relays: string[],
-  kind: number = 20004,
+  kind: number = FROSTR_RPC_KIND,
   addServerLog?: ReturnType<typeof createAddServerLog>
 ): Promise<void> {
   if (relays.length === 0) {
@@ -766,7 +724,7 @@ async function runBackgroundRelayProbe(
 
     if (filtered.length === 0) {
       if (addServerLog) {
-        addServerLog('warning', 'Background probe: all relays reject kind 20004; keeping original relay list');
+        addServerLog('warning', `Background probe: all relays reject kind ${FROSTR_RPC_KIND}; keeping original relay list`);
       }
       return;
     }
@@ -780,7 +738,7 @@ async function runBackgroundRelayProbe(
         });
       }
     } else if (addServerLog) {
-      addServerLog('debug', 'Background probe complete: all relays support kind 20004');
+      addServerLog('debug', `Background probe complete: all relays support kind ${FROSTR_RPC_KIND}`);
     }
 
   } catch (error) {
@@ -965,8 +923,11 @@ async function performKeepAlivePing(
     const normalizedPeerPubkey = normalizePubkey(peerPubkey);
 
     // Race ping with timeout using helper to avoid stray rejections
+    // bifrost resolves { ok: false, err } on failure rather than rejecting.
     const pingResult = await withTimeout<PingResult>(pingFn(normalizedPeerPubkey), CONNECTIVITY_PING_TIMEOUT)
-      .then((res: PingResult) => ({ ok: true, result: res }))
+      .then((res: PingResult) => res?.ok === false
+        ? { ok: false, err: res.err ?? res.error ?? 'ping failed' }
+        : { ok: true, result: res })
       .catch((err: Error) => ({ ok: false, err: err?.message || 'ping failed' })) as { ok: boolean; err?: string; result?: PingResult };
 
     if (pingResult && pingResult.ok) {
@@ -1401,6 +1362,23 @@ export function createAddServerLog(
 }
 
 /**
+ * bifrost 2 emits @vbyte/nostr-sdk RPC messages ({ type, method?, event })
+ * where bifrost 1 emitted { tag, env }. Map requests onto the legacy tags the
+ * message handler below reads ('/ping/req', '/sign/req', ...). Responses carry
+ * no method, so they get a generic tag and are only counted as activity.
+ * Echo requests are answered by bifrost 2 itself; nothing to do here.
+ */
+function toLegacyMessage(msg: unknown): unknown {
+  if (!msg || typeof msg !== 'object') return msg;
+  const m = msg as { tag?: unknown; type?: unknown; method?: unknown; event?: unknown };
+  if (typeof m.tag === 'string' || typeof m.type !== 'string') return msg;
+  const tag = m.type === 'request' && typeof m.method === 'string'
+    ? `/${m.method}/req`
+    : `/rpc/${m.type}`;
+  return { ...m, tag, env: m.event };
+}
+
+/**
  * Determine if a ping message is a self-ping based on credentials and message content.
  * Safely extracts our pubkey from credentials, normalizes it, and compares it against
  * the pubkey found in the message data (env.pubkey or data.from). Returns false on any error.
@@ -1519,9 +1497,10 @@ export function setupNodeEventListeners(
   });
 
   // Message events
-  node.on('message', (msg: unknown) => {
+  node.on('message', (rawMsg: unknown) => {
     updateNodeActivity(addServerLog); // Update activity on every message
-    
+    const msg = toLegacyMessage(rawMsg);
+
     try {
       if (msg && typeof msg === 'object' && 'tag' in msg) {
         const messageData = msg as { tag: unknown; [key: string]: unknown };
@@ -1608,29 +1587,6 @@ export function setupNodeEventListeners(
             if (!UI_EVENT_LOG_INCLUDE_PINGS) {
               return
             }
-          }
-
-          if (tag === '/echo/req') {
-            const echoMessage = msg as any;
-            const requesterPubkey = echoMessage?.env?.pubkey;
-            void respondToEchoRequest(node, echoMessage).then((handled) => {
-              if (handled) {
-                addServerLog('bifrost', 'Echo response published', {
-                  requesterPubkey,
-                  echoId: echoMessage?.id
-                });
-              } else {
-                addServerLog('info', 'Ignored echo request from unknown peer', {
-                  requesterPubkey
-                });
-              }
-            }).catch((error) => {
-              addServerLog('warn', 'Failed to handle echo request', {
-                error: error instanceof Error ? error.message : String(error),
-                requesterPubkey,
-                echoId: echoMessage?.id
-              });
-            });
           }
 
           const eventInfo = EVENT_MAPPINGS[tag as keyof typeof EVENT_MAPPINGS];
@@ -2026,35 +1982,20 @@ export async function broadcastShareEcho(
 
     node = result.node as ServerBifrostNode;
 
-    const client: any = node?.client;
-    const targetPubkey = typeof (node as any)?.pubkey === 'string' ? (node as any).pubkey : undefined;
-
-    if (!client || typeof client.publish !== 'function' || !targetPubkey) {
-      throw new Error('Echo broadcaster missing publish capability or target pubkey');
-    }
-
-    const envelope = finalize_message({
-      data: 'echo',
-      id: randomBytes(16).toString('hex'),
-      tag: '/echo/req'
-    });
-
-    const publishResult = await client.publish(envelope, targetPubkey);
-    const ok = !!publishResult?.ok;
+    // bifrost 2: an echo is an RPC request addressed to our own share pubkey;
+    // every node holding this share (e.g. Igloo awaiting the handoff) sees it.
+    const echoResult = await node.req.echo(randomBytes(16).toString('hex'));
+    const ok = !!echoResult?.ok;
 
     if (addServerLog) {
       if (ok) {
         addServerLog('info', `Broadcasted credential echo${broadcastLabel}`, {
-          relays: resolvedRelays,
-          acks: publishResult.acks ?? [],
-          fails: publishResult.fails ?? []
+          relays: resolvedRelays
         });
       } else {
         addServerLog('warn', `Credential echo broadcast failed${broadcastLabel}`, {
           relays: resolvedRelays,
-          acks: publishResult?.acks ?? [],
-          fails: publishResult?.fails ?? [],
-          reason: publishResult?.reason ?? publishResult?.error ?? 'unknown'
+          reason: (echoResult as { err?: string } | undefined)?.err ?? 'unknown'
         });
       }
     }
@@ -2134,7 +2075,7 @@ export async function createNodeWithCredentials(
 
   if (SKIP_RELAY_PROBE) {
     if (addServerLog) {
-      addServerLog('info', 'SKIP_RELAY_PROBE enabled: skipping relay kind 20004 verification');
+      addServerLog('info', `SKIP_RELAY_PROBE enabled: skipping relay kind ${FROSTR_RPC_KIND} verification`);
     }
   } else if (DEFER_RELAY_PROBE) {
     if (addServerLog) {
@@ -2142,14 +2083,14 @@ export async function createNodeWithCredentials(
     }
     // Background probe will be started after node creation (see below)
   } else {
-    // Minimal startup self-test: drop relays that reject kind 20004 (Bifrost)
+    // Minimal startup self-test: drop relays that reject the FROSTR RPC kind (Bifrost)
     try {
-      const tested = await filterRelaysForKindSupport(relays, 20004, addServerLog);
+      const tested = await filterRelaysForKindSupport(relays, FROSTR_RPC_KIND, addServerLog);
       if (tested.length === 0) {
-        if (addServerLog) addServerLog('warning', 'All configured relays reject kind 20004; proceeding with original list but server may log policy rejections');
+        if (addServerLog) addServerLog('warning', `All configured relays reject kind ${FROSTR_RPC_KIND}; proceeding with original list but server may log policy rejections`);
       } else if (tested.length < relays.length) {
         const dropped = relays.filter(r => !tested.includes(r));
-        if (addServerLog) addServerLog('info', `Filtering ${dropped.length} relay(s) that reject kind 20004`, { dropped, kept: tested });
+        if (addServerLog) addServerLog('info', `Filtering ${dropped.length} relay(s) that reject kind ${FROSTR_RPC_KIND}`, { dropped, kept: tested });
         relays = tested;
       }
     } catch (e) {
@@ -2349,7 +2290,7 @@ export async function createNodeWithCredentials(
 
           // Start background probe if deferred (perf optimization 3.1)
           if (DEFER_RELAY_PROBE && !SKIP_RELAY_PROBE) {
-            void runBackgroundRelayProbe(relaysToProbe, 20004, addServerLog);
+            void runBackgroundRelayProbe(relaysToProbe, FROSTR_RPC_KIND, addServerLog);
           }
 
           return wrappedNode;
@@ -2384,7 +2325,7 @@ export async function createNodeWithCredentials(
 
               // Start background probe if deferred (perf optimization 3.1)
               if (DEFER_RELAY_PROBE && !SKIP_RELAY_PROBE) {
-                void runBackgroundRelayProbe(relaysToProbe, 20004, addServerLog);
+                void runBackgroundRelayProbe(relaysToProbe, FROSTR_RPC_KIND, addServerLog);
               }
 
               return wrappedNode;

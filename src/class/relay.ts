@@ -211,7 +211,12 @@ class RelaySession {
     }
 
     this.send([ 'OK', event.id, true, '' ])
-    this.relay.store(event)
+    // NIP-01: ephemeral kinds (20000-29999) are forwarded but not stored.
+    // FROSTR RPC (bifrost 2) uses kind 20000; replaying it to later
+    // subscribers would re-deliver stale sign/ping requests.
+    if (event.kind < 20000 || event.kind >= 30000) {
+      this.relay.store(event)
+    }
 
     for (const { filters, instance, sub_id } of this.relay.subs.values()) {
       for (const filter of filters) {

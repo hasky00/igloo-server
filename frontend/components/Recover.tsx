@@ -3,12 +3,9 @@ import { Button } from "./ui/button"
 import { InputWithValidation } from "./ui/input-with-validation"
 import { Tooltip } from "./ui/tooltip"
 import { HelpCircle } from "lucide-react"
-import {
-  validateShare,
-  validateGroup,
-  decodeShare,
-  decodeGroup
-} from '@frostr/igloo-core';
+// FROSTR helpers ported from igloo-core to bifrost 2 (see src/frostr)
+import { validateShare, validateGroup } from '../../src/frostr/validation.js';
+import { decodeShare, decodeGroup } from '../../src/frostr/keyset.js';
 
 interface RecoverProps {
   initialShare?: string;
@@ -201,7 +198,7 @@ const Recover: React.FC<RecoverProps> = ({
               try {
                 const decodedGroup = decodeGroup(validShare.groupCredential);
                 setCurrentThreshold(decodedGroup.threshold);
-                setCurrentTotalShares(decodedGroup.commits.length);
+                setCurrentTotalShares(decodedGroup.members.length);
               } catch (error) {
                 setCurrentThreshold(defaultThreshold);
                 setCurrentTotalShares(defaultTotalShares);
@@ -245,7 +242,7 @@ const Recover: React.FC<RecoverProps> = ({
         try {
           const decodedGroup = decodeGroup(initialGroupCredential);
           setCurrentThreshold(decodedGroup.threshold);
-          setCurrentTotalShares(decodedGroup.commits.length);
+          setCurrentTotalShares(decodedGroup.members.length);
         } catch (error) {
           // If decode fails, use defaults
           setCurrentThreshold(defaultThreshold);
@@ -337,8 +334,8 @@ const Recover: React.FC<RecoverProps> = ({
         // Additional structure validation
         if (typeof decodedGroup.threshold !== 'number' || 
             !(typeof decodedGroup.group_pk === 'string' || decodedGroup.group_pk instanceof Uint8Array) || 
-            !Array.isArray(decodedGroup.commits) ||
-            decodedGroup.commits.length === 0) {
+            !Array.isArray(decodedGroup.members) ||
+            decodedGroup.members.length === 0) {
           setIsGroupValid(false);
           setGroupError('Group credential has invalid internal structure');
           setCurrentThreshold(defaultThreshold);
@@ -348,7 +345,7 @@ const Recover: React.FC<RecoverProps> = ({
         
         // Set the dynamic threshold and total shares
         setCurrentThreshold(decodedGroup.threshold);
-        setCurrentTotalShares(decodedGroup.commits.length);
+        setCurrentTotalShares(decodedGroup.members.length);
         setIsGroupValid(true);
         setGroupError(undefined);
         

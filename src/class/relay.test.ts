@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { finalizeEvent, generateSecretKey } from 'nostr-tools';
 import { NostrRelay } from './relay.js';
 
 type FakeSocket = {
@@ -173,5 +174,28 @@ describe('NostrRelay REQ handling', () => {
     expect((eventMessages[0]?.[2] as { kind?: number }).kind).toBe(1);
     expect((eventMessages[0]?.[2] as { id?: string }).id).toBe(matchedB.id);
     expect(messages).toContainEqual(['EOSE', 'sub-limit']);
+  });
+});
+
+describe('NostrRelay EVENT storage', () => {
+  it('forwards ephemeral events but only stores regular ones (NIP-01)', () => {
+    const relay = new NostrRelay({ info: false, debug: false });
+    const handler = relay.handler();
+    const listener = createFakeSocket();
+    const publisher = createFakeSocket();
+    handler.open?.(asHandlerSocket(listener));
+    handler.open?.(asHandlerSocket(publisher));
+    handler.message?.(asHandlerSocket(listener), JSON.stringify(['REQ', 'live', { kinds: [1, 20000] }]));
+
+    const sk = generateSecretKey();
+    const now = Math.floor(Date.now() / 1000);
+    const ephemeral = finalizeEvent({ kind: 20000, created_at: now, tags: [], content: 'rpc' }, sk);
+    const regular = finalizeEvent({ kind: 1, created_at: now, tags: [], content: 'note' }, sk);
+    handler.message?.(asHandlerSocket(publisher), JSON.stringify(['EVENT', ephemeral]));
+    handler.message?.(asHandlerSocket(publisher), JSON.stringify(['EVENT', regular]));
+
+    const live = decodeSent(listener).filter((m) => m[0] === 'EVENT').map((m) => (m[2] as { id: string }).id);
+    expect(live).toEqual([ephemeral.id, regular.id]);
+    expect(relay.cache.map((e) => e.id)).toEqual([regular.id]);
   });
 });
