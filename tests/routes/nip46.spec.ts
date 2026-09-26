@@ -931,21 +931,24 @@ describe('NIP-46 nostrconnect login (welshman / Coracle)', () => {
       service.agent = { socket: { subscribe: async () => {}, send: async (msg, pk) => { sent.push({ msg, pk }); await onSend(msg, pk); } } };
       let onSend = async () => {};
       const client = 'e'.repeat(64);
+      nip46.setNip46Relays(1, ['wss://own.example']);
       const status = () => database.default.query('SELECT status FROM nip46_sessions WHERE client_pubkey = ?').get(client)?.status ?? null;
+      const sessionRelays = () => JSON.parse(database.default.query('SELECT relays FROM nip46_sessions WHERE client_pubkey = ?').get(client)?.relays ?? 'null');
       const queued = () => database.default.query('SELECT COUNT(*) AS n FROM nip46_requests').get().n;
   `;
 
-  test('switch_relays is answered at once with null (keep relays), not queued', () => {
+  test('switch_relays moves the client onto our saved relays at once, not queued', () => {
     const script = setup + `
       await service.handleSocketRequest({ id: 'sr-1', method: 'switch_relays', params: [], session: { pubkey: client } });
-      const result = { sent: sent.map((s) => s.msg), queued: queued() };
+      const result = { sent: sent.map((s) => s.msg), queued: queued(), relays: sessionRelays() };
       try { await database.closeDatabase(); } catch {}
       console.log('@@RESULT@@' + JSON.stringify(result));
       process.exit(0);
     `;
-    const out = runRouteScript<{ sent: unknown[]; queued: number }>(script);
-    expect(out.sent).toEqual([{ id: 'sr-1', result: 'null' }]);
+    const out = runRouteScript<{ sent: unknown[]; queued: number; relays: string[] }>(script);
+    expect(out.sent).toEqual([{ id: 'sr-1', result: JSON.stringify(['wss://own.example']) }]);
     expect(out.queued).toBe(0);
+    expect(out.relays).toEqual(['wss://own.example']);
   });
 
   test('a client answering the ack immediately leaves the session active, not pending', () => {
@@ -965,7 +968,35 @@ describe('NIP-46 nostrconnect login (welshman / Coracle)', () => {
     `;
     const out = runRouteScript<{ status: string; sent: unknown[] }>(script);
     expect(out.sent).toContainEqual({ id: 'sekret', result: 'sekret' });
-    expect(out.sent).toContainEqual({ id: 'sr-2', result: 'null' });
+    expect(out.sent).toContainEqual({ id: 'sr-2', result: JSON.stringify(['wss://own.example']) });
     expect(out.status).toBe('active');
+  });
+
+  test('requests without relays keep the relays stored at connect', () => {
+    const script = setup + `
+      const uri = 'nostrconnect://' + client + '?relay=' + encodeURIComponent('wss://client.example') + '&secret=s3&name=Coracle';
+      await service.connectFromUri(1, uri);
+      const before = sessionRelays();
+      await service.handleSocketRequest({ id: 'p-1', method: 'ping', params: [], session: { pubkey: client } });
+      const after = sessionRelays();
+      try { await database.closeDatabase(); } catch {}
+      console.log('@@RESULT@@' + JSON.stringify({ before, after }));
+      process.exit(0);
+    `;
+    const out = runRouteScript<{ before: string[]; after: string[] }>(script);
+    expect(out.before).toEqual(['wss://client.example']);
+    expect(out.after).toEqual(['wss://client.example']);
+  });
+
+  test('the socket listens on the saved relays plus every active session\'s relays', () => {
+    const script = setup + `
+      nip46.upsertSession({ userId: 1, client_pubkey: client, status: 'active', relays: ['wss://client.example'] });
+      const listening = await service.listeningRelays(1);
+      try { await database.closeDatabase(); } catch {}
+      console.log('@@RESULT@@' + JSON.stringify({ listening }));
+      process.exit(0);
+    `;
+    const out = runRouteScript<{ listening: string[] }>(script);
+    expect(out.listening.sort()).toEqual(['wss://client.example', 'wss://own.example']);
   });
 });
