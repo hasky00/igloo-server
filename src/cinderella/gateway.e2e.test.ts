@@ -100,11 +100,12 @@ describe('Cinderella gateway (real bifrost nodes)', () => {
 
   it('reports a policy refusal as refused-or-unreachable', async () => {
     const before = refusals.length;
-    const res = await signEventWithPolicy(gateway, template(0), TIMEOUT_MS);
+    // kind 1984 is simply refused (kind 0 is delay-gated: held, see held-events.e2e.test.ts)
+    const res = await signEventWithPolicy(gateway, template(1984), TIMEOUT_MS);
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.code).toBe('SIGN_REFUSED_OR_UNREACHABLE');
-    expect(refusals.slice(before)).toContain('kind 0 not allowed');
+    expect(refusals.slice(before)).toContain('kind 1984 not allowed');
   }, { timeout: 15000 });
 
   it('keeps signing after a refusal', async () => {
