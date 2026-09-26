@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { Sessions } from './nip46/Sessions'
 import { Requests } from './nip46/Requests'
 import { RelaySettings } from './nip46/RelaySettings'
+import { HeldEvents } from './nip46/HeldEvents'
 import { Nip46SessionApi, Nip46RequestApi, PermissionPolicy, PolicyPatch } from './nip46/types'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
 import { Button } from './ui/button'
@@ -11,7 +12,7 @@ import { Input } from './ui/input'
 import { Alert } from './ui/alert'
 import { QRScanner } from './nip46/QRScanner'
 import Spinner from './ui/spinner'
-import { Users, Bell, HelpCircle, Copy as CopyIcon, Check as CheckIcon, Eye, EyeOff, Radio, QrCode, X as CloseIcon } from 'lucide-react'
+import { Users, Bell, HelpCircle, Copy as CopyIcon, Check as CheckIcon, Eye, EyeOff, Radio, QrCode, X as CloseIcon, Clock } from 'lucide-react'
 
 interface NIP46Props {
   authHeaders?: Record<string, string>
@@ -518,7 +519,7 @@ export function NIP46({ authHeaders }: NIP46Props) {
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className="grid grid-cols-3 mb-4 bg-gray-800/50 w-full">
+        <TabsList className="grid grid-cols-4 mb-4 bg-gray-800/50 w-full">
           <TabsTrigger value="sessions" className="text-sm py-2 text-blue-400 data-[state=active]:bg-blue-900/60 data-[state=active]:text-blue-200">
             <Users className="h-4 w-4 mr-2" />
             Sessions
@@ -533,6 +534,10 @@ export function NIP46({ authHeaders }: NIP46Props) {
             <Radio className="h-4 w-4 mr-2" />
             Relays
             <Badge className="ml-2">{nip46Relays.length}</Badge>
+          </TabsTrigger>
+          <TabsTrigger value="held" className="text-sm py-2 text-blue-400 data-[state=active]:bg-blue-900/60 data-[state=active]:text-blue-200">
+            <Clock className="h-4 w-4 mr-2" />
+            Held
           </TabsTrigger>
         </TabsList>
 
@@ -568,6 +573,10 @@ export function NIP46({ authHeaders }: NIP46Props) {
             onAdd={handleAddRelay}
             onRemove={handleRemoveRelay}
           />
+        </TabsContent>
+
+        <TabsContent value="held" className="p-2 sm:p-4">
+          <HeldEvents authHeaders={authHeaders} />
         </TabsContent>
       </Tabs>
     </div>

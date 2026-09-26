@@ -216,7 +216,8 @@ describe('API key-protected route handlers', () => {
     const { handleSignRoute } = await import(`../../src/routes/sign.ts?${Math.random()}`);
     const node = makeSignNode(async () => ({ ok: false, err: 'request timed out' }));
 
-    const res = await handleSignRoute(signRequest({ event: { ...EVENT, kind: 0 } }), new URL('http://localhost/api/sign'), makeContext(node), { authenticated: true });
+    // kind 1: an ordinary refused kind (kind 0 is delay-gated and held: see held-events.spec.ts)
+    const res = await handleSignRoute(signRequest({ event: { ...EVENT, kind: 1 } }), new URL('http://localhost/api/sign'), makeContext(node), { authenticated: true });
     expect(res.status).toBe(504);
     const body = await res.json();
     expect(body.code).toBe('SIGN_REFUSED_OR_UNREACHABLE');

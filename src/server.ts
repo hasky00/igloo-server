@@ -12,7 +12,8 @@ import type {
   UpdateNodeOptions,
   NodeCredentialSnapshot
 } from './routes/index.js';
-import { assertNoSessionSecretExposure, isWebSocketOriginAllowed, getTrustedClientIp } from './routes/utils.js';
+import { assertNoSessionSecretExposure, isWebSocketOriginAllowed, getTrustedClientIp, getOpTimeoutMs } from './routes/utils.js';
+import { startHeldEventScheduler } from './cinderella/held-events.js';
 import type { UiEventLogStreamEntry } from './db/ui-event-log.js';
 import {
   createBroadcastEvent,
@@ -421,6 +422,12 @@ try {
       console.error('⚠️  Failed to initialize NIP-46 service:', error instanceof Error ? error.message : String(error));
     }
   }
+  // Re-request and publish delay-gated events after their delay (both modes).
+  startHeldEventScheduler({
+    getNode: () => node,
+    log: addServerLog,
+    timeoutMs: getOpTimeoutMs()
+  });
 } catch (err) {
   console.error('❌ Fatal initialization error:');
   console.error('  ', err instanceof Error ? err.message : String(err));

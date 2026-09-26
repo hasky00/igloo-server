@@ -229,6 +229,17 @@ export async function handleSignRoute(req: Request, url: URL, context: RouteCont
     }, timeoutMs);
 
     if (!signed.ok) {
+      if (signed.code === 'SIGN_HELD') {
+        try { context.addServerLog('info', 'Delay-gated event held; will be re-requested and published after unlock', { id, kind: template.kind, heldId: signed.heldId, unlockAt: new Date(signed.unlockAt).toISOString() }); } catch {}
+        return Response.json({
+          code: signed.code,
+          message: signed.reason,
+          id,
+          heldId: signed.heldId,
+          unlockAt: new Date(signed.unlockAt).toISOString(),
+          status: signed.status
+        }, { status: 202, headers });
+      }
       if (signed.code === 'SIGN_REFUSED_OR_UNREACHABLE') {
         try { context.addServerLog('warning', 'Signing refused or timed out', { id, kind: template.kind, timeoutMs }); } catch {}
         return Response.json({ code: signed.code, error: signed.reason }, { status: 504, headers });

@@ -8,10 +8,13 @@ import type { ServerBifrostNode } from '../routes/types.js';
 import { withTimeout } from '../routes/utils.js';
 import { cinderella_sign, group_pubkey, type EventTemplate } from './request.js';
 import type { NostrEvent } from './types.js';
+import { heldDelayHours } from './held-config.js';
+import { heldMessage, signOrHold } from './held-events.js';
 
 export type PolicySignResult =
   | { ok: true; event: NostrEvent }
-  | { ok: false; code: 'SIGN_REFUSED_OR_UNREACHABLE' | 'SIGN_FAILED'; reason: string };
+  | { ok: false; code: 'SIGN_REFUSED_OR_UNREACHABLE' | 'SIGN_FAILED'; reason: string }
+  | { ok: false; code: 'SIGN_HELD'; reason: string; heldId: string; unlockAt: number; status: string };
 
 /**
  * bifrost does not relay refusals (FROSTR-ORG/bifrost#13): a share node that
@@ -31,6 +34,20 @@ export async function signEventWithPolicy(
   timeoutMs: number
 ): Promise<PolicySignResult> {
   try {
+    // Delay-gated kinds (profile, delete, …): shown to every share node and
+    // held; the gateway re-requests and publishes them after the delay.
+    if (heldDelayHours(template.kind) !== undefined) {
+      const outcome = await signOrHold(node, template, timeoutMs);
+      if (outcome.ok) return { ok: true, event: outcome.event };
+      return {
+        ok: false,
+        code: 'SIGN_HELD',
+        reason: heldMessage(outcome.held),
+        heldId: outcome.held.id,
+        unlockAt: outcome.held.unlock_at,
+        status: outcome.held.status
+      };
+    }
     const event = await withTimeout(cinderella_sign(node as any, template), timeoutMs, 'SIGN_TIMEOUT');
     return { ok: true, event };
   } catch (error) {

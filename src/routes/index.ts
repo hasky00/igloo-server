@@ -23,6 +23,7 @@ import { handleRecoveryRoute } from './recovery.js';
 import { handleEnvRoute } from './env.js';
 import { handleStaticRoute } from './static.js';
 import { handleSignRoute } from './sign.js';
+import { handleHeldEventsRoute } from './held-events.js';
 import { handleNip44Route } from './nip44.js';
 import { handleNip04Route } from './nip04.js';
 import { handleNip46Route } from './nip46.js';
@@ -353,6 +354,7 @@ export async function handleRequest(
       handleEventLogRoute,
       handlePeersRoute,
       handleSignRoute,
+      handleHeldEventsRoute,
       handleNip44Route,
       handleNip04Route,
       handleRecoveryRoute,
