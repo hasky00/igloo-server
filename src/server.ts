@@ -14,6 +14,7 @@ import type {
 } from './routes/index.js';
 import { assertNoSessionSecretExposure, isWebSocketOriginAllowed, getTrustedClientIp, getOpTimeoutMs } from './routes/utils.js';
 import { startHeldEventScheduler } from './cinderella/held-events.js';
+import { startVetoNoticeListener } from './cinderella/veto-notices.js';
 import type { UiEventLogStreamEntry } from './db/ui-event-log.js';
 import {
   createBroadcastEvent,
@@ -428,6 +429,8 @@ try {
     log: addServerLog,
     timeoutMs: getOpTimeoutMs()
   });
+  // Share nodes report vetoes to the Gateway's notice key; mark those held events 'vetoed'.
+  startVetoNoticeListener(addServerLog);
 } catch (err) {
   console.error('❌ Fatal initialization error:');
   console.error('  ', err instanceof Error ? err.message : String(err));

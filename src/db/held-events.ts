@@ -10,7 +10,7 @@
 import { randomBytes } from 'node:crypto';
 import db from './database.js';
 
-export type HeldStatus = 'held' | 'signed' | 'published' | 'failed' | 'cancelled' | 'superseded';
+export type HeldStatus = 'held' | 'signed' | 'published' | 'failed' | 'cancelled' | 'superseded' | 'vetoed';
 
 export interface UnsignedEvent {
   pubkey: string;
@@ -182,6 +182,18 @@ export function updateHeld(id: string, fields: {
   if (!sets.length) return;
   sets.push('updated_at = CURRENT_TIMESTAMP');
   db.query(`UPDATE held_events SET ${sets.join(', ')} WHERE id = ?`).run(...values, id);
+}
+
+/**
+ * A share node reported a veto (see src/cinderella/veto-notices.ts). Only a
+ * still-held event becomes 'vetoed'; the scheduler then stops re-requesting it.
+ */
+export function markVetoed(eventId: string): boolean {
+  ensureTable();
+  const res = db.query(
+    "UPDATE held_events SET status = 'vetoed', last_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND status = 'held'"
+  ).run(eventId);
+  return res.changes > 0;
 }
 
 /** Cancel a held event before it is re-requested. Only 'held' events can be cancelled. */

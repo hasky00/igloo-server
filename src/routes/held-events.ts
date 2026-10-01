@@ -12,6 +12,9 @@ import { getSecureCorsHeaders, mergeVaryHeaders } from './utils.js';
 import type { RouteContext, RequestAuth } from './types.js';
 import { cancelHeld, listHeld } from '../db/held-events.js';
 import { groupPubkey } from '../cinderella/sign-event.js';
+import { getOrCreateNoticeKey } from '../db/notices.js';
+import { nodeAlertPubkeys } from '../cinderella/veto-notices.js';
+import { nip19 } from 'nostr-tools';
 
 export async function handleHeldEventsRoute(
   req: Request,
@@ -31,6 +34,16 @@ export async function handleHeldEventsRoute(
   };
 
   if (req.method === 'OPTIONS') return new Response(null, { status: 200, headers });
+
+  // The npub share nodes send veto notices to (their veto.gateway_pubkey).
+  if (url.pathname === '/api/held-events/notice-key' && req.method === 'GET') {
+    const { pubkey } = getOrCreateNoticeKey();
+    return Response.json({
+      npub: nip19.npubEncode(pubkey),
+      pubkey,
+      nodeAlertPubkeys: nodeAlertPubkeys().map(pk => nip19.npubEncode(pk)),
+    }, { headers });
+  }
 
   if (!context.node) {
     return Response.json({ code: 'NODE_UNAVAILABLE', error: 'Signer not running' }, { status: 503, headers });
