@@ -1,7 +1,7 @@
 import type { RouteContext, RequestAuth } from './types.js';
 import { getSecureCorsHeaders, mergeVaryHeaders, getOpTimeoutMs } from './utils.js';
 import { checkRateLimit } from './auth.js';
-import { getEventHash, type EventTemplate, type UnsignedEvent } from 'nostr-tools';
+import { getEventHash, nip19, type EventTemplate, type UnsignedEvent } from 'nostr-tools';
 import { groupPubkey, signEventWithPolicy } from '../cinderella/sign-event.js';
 
 type SignRequestBody = {
@@ -239,6 +239,17 @@ export async function handleSignRoute(req: Request, url: URL, context: RouteCont
           unlockAt: new Date(signed.unlockAt).toISOString(),
           status: signed.status
         }, { status: 202, headers });
+      }
+      if (signed.code === 'SIGN_VETOED') {
+        try { context.addServerLog('info', 'Vetoed event submitted again; refused', { id, kind: template.kind, heldId: signed.heldId }); } catch {}
+        return Response.json({
+          code: signed.code,
+          error: signed.reason,
+          id,
+          heldId: signed.heldId,
+          vetoedBy: signed.vetoedBy ? nip19.npubEncode(signed.vetoedBy) : null,
+          status: 'vetoed'
+        }, { status: 403, headers });
       }
       if (signed.code === 'SIGN_REFUSED_OR_UNREACHABLE') {
         try { context.addServerLog('warning', 'Signing refused or timed out', { id, kind: template.kind, timeoutMs }); } catch {}

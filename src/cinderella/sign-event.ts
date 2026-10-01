@@ -14,7 +14,8 @@ import { heldMessage, signOrHold } from './held-events.js';
 export type PolicySignResult =
   | { ok: true; event: NostrEvent }
   | { ok: false; code: 'SIGN_REFUSED_OR_UNREACHABLE' | 'SIGN_FAILED'; reason: string }
-  | { ok: false; code: 'SIGN_HELD'; reason: string; heldId: string; unlockAt: number; status: string };
+  | { ok: false; code: 'SIGN_HELD'; reason: string; heldId: string; unlockAt: number; status: string }
+  | { ok: false; code: 'SIGN_VETOED'; reason: string; heldId: string; vetoedBy: string | null };
 
 /**
  * bifrost does not relay refusals (FROSTR-ORG/bifrost#13): a share node that
@@ -39,6 +40,9 @@ export async function signEventWithPolicy(
     if (heldDelayHours(template.kind) !== undefined) {
       const outcome = await signOrHold(node, template, timeoutMs);
       if (outcome.ok) return { ok: true, event: outcome.event };
+      if (outcome.held.status === 'vetoed') {
+        return { ok: false, code: 'SIGN_VETOED', reason: heldMessage(outcome.held), heldId: outcome.held.id, vetoedBy: outcome.held.vetoed_by };
+      }
       return {
         ok: false,
         code: 'SIGN_HELD',

@@ -12,7 +12,7 @@ import { getSecureCorsHeaders, mergeVaryHeaders } from './utils.js';
 import type { RouteContext, RequestAuth } from './types.js';
 import { cancelHeld, listHeld } from '../db/held-events.js';
 import { groupPubkey } from '../cinderella/sign-event.js';
-import { getOrCreateNoticeKey } from '../db/notices.js';
+import { noticePubkey } from '../db/notices.js';
 import { nodeAlertPubkeys } from '../cinderella/veto-notices.js';
 import { nip19 } from 'nostr-tools';
 
@@ -37,9 +37,9 @@ export async function handleHeldEventsRoute(
 
   // The npub share nodes send veto notices to (their veto.gateway_pubkey).
   if (url.pathname === '/api/held-events/notice-key' && req.method === 'GET') {
-    const { pubkey } = getOrCreateNoticeKey();
+    const pubkey = noticePubkey();
     return Response.json({
-      npub: nip19.npubEncode(pubkey),
+      npub: pubkey ? nip19.npubEncode(pubkey) : null,
       pubkey,
       nodeAlertPubkeys: nodeAlertPubkeys().map(pk => nip19.npubEncode(pk)),
     }, { headers });
@@ -63,6 +63,7 @@ export async function handleHeldEventsRoute(
       attempts: h.attempts,
       publishResults: h.publish_results,
       lastError: h.last_error,
+      vetoedBy: h.vetoed_by ? nip19.npubEncode(h.vetoed_by) : null,
     }));
     return Response.json({ events }, { headers });
   }
@@ -71,7 +72,7 @@ export async function handleHeldEventsRoute(
   if (match && req.method === 'DELETE') {
     const cancelled = cancelHeld(match[1], pubkey);
     if (!cancelled) {
-      return Response.json({ error: 'Not found, or already re-requested / finished' }, { status: 404, headers });
+      return Response.json({ error: 'Not found, or no longer held or vetoed' }, { status: 404, headers });
     }
     try { context.addServerLog('info', 'Held event cancelled', { id: match[1] }); } catch {}
     return Response.json({ cancelled: true }, { headers });

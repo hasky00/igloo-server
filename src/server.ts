@@ -14,7 +14,7 @@ import type {
 } from './routes/index.js';
 import { assertNoSessionSecretExposure, isWebSocketOriginAllowed, getTrustedClientIp, getOpTimeoutMs } from './routes/utils.js';
 import { startHeldEventScheduler } from './cinderella/held-events.js';
-import { startVetoNoticeListener } from './cinderella/veto-notices.js';
+import { setupVetoNotices, stopVetoNoticeListener } from './cinderella/veto-notices.js';
 import type { UiEventLogStreamEntry } from './db/ui-event-log.js';
 import {
   createBroadcastEvent,
@@ -429,12 +429,19 @@ try {
     log: addServerLog,
     timeoutMs: getOpTimeoutMs()
   });
-  // Share nodes report vetoes to the Gateway's notice key; mark those held events 'vetoed'.
-  startVetoNoticeListener(addServerLog);
 } catch (err) {
   console.error('❌ Fatal initialization error:');
   console.error('  ', err instanceof Error ? err.message : String(err));
   process.exit(1);
+}
+
+// Veto notices from share nodes (optional): outside the fatal block, so a setup
+// error only disables them. Headless reads NOTICE_SECRET now; database mode
+// unlocks the notice key together with the signer (routes/user.ts).
+try {
+  setupVetoNotices(addServerLog, { headless: CONST.HEADLESS });
+} catch (err) {
+  addServerLog('error', 'Veto notices disabled', err);
 }
 
 // Create the Nostr relay
@@ -1051,6 +1058,13 @@ async function handleShutdown(signal: string): Promise<void> {
   isShuttingDown = true;
 
   addServerLog('system', `Received ${signal}, shutting down gracefully`);
+
+  // Veto notices: stop the feed and close its relay connections.
+  try {
+    stopVetoNoticeListener();
+  } catch (error) {
+    addServerLog('error', 'Error stopping the veto notice listener', error);
+  }
 
   const service = getNip46Service();
   if (service) {
