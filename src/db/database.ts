@@ -651,6 +651,55 @@ export const updateUserCredentials = (
   }
 };
 
+// The user's credential key (hex): derived from the password, or the already-derived key.
+const userKeyHex = (
+  salt: string,
+  passwordOrKey: string | Uint8Array | Buffer,
+  isDerivedKey: boolean
+): string => {
+  if (isDerivedKey) {
+    if (typeof passwordOrKey === 'string') {
+      if (!passwordOrKey.match(/^[0-9a-f]{64}$/i)) throw new Error('Invalid derived key format');
+      return passwordOrKey.toLowerCase();
+    }
+    const bytes = passwordOrKey instanceof Uint8Array ? passwordOrKey : new Uint8Array(passwordOrKey);
+    if (bytes.length !== 32) throw new Error('Invalid derived key length: expected 32 bytes');
+    return Buffer.from(bytes).toString('hex');
+  }
+  if (typeof passwordOrKey !== 'string') throw new Error('Password must be a string');
+  return deriveKey(passwordOrKey, salt).toString('hex'); // Derive from password
+};
+
+/**
+ * Encrypt / decrypt another per-user secret exactly like the group and share
+ * credentials (AES-256-GCM with the user's password-derived key). Used for the
+ * Gateway's veto-notice key (src/db/notices.ts). Throws if the user is unknown
+ * or the key is wrong.
+ */
+export const encryptUserSecret = (
+  userId: number | bigint,
+  passwordOrKey: string | Uint8Array | Buffer,
+  isDerivedKey: boolean,
+  plaintext: string
+): string => {
+  checkShutdown();
+  const user = getUserById(userId);
+  if (!user) throw new Error('Unknown user');
+  return encrypt(plaintext, userKeyHex(user.salt, passwordOrKey, isDerivedKey));
+};
+
+export const decryptUserSecret = (
+  userId: number | bigint,
+  passwordOrKey: string | Uint8Array | Buffer,
+  isDerivedKey: boolean,
+  ciphertext: string
+): string => {
+  checkShutdown();
+  const user = getUserById(userId);
+  if (!user) throw new Error('Unknown user');
+  return decrypt(ciphertext, userKeyHex(user.salt, passwordOrKey, isDerivedKey));
+};
+
 // Get decrypted user credentials
 export const getUserCredentials = (
   userId: number | bigint,
@@ -663,20 +712,7 @@ export const getUserCredentials = (
     if (!user) return null;
     
     // Get decryption key - either derive from password or use provided derived key
-    let key: string;
-    if (isDerivedKey) {
-      if (typeof passwordOrKey === 'string') {
-        if (!passwordOrKey.match(/^[0-9a-f]{64}$/i)) throw new Error('Invalid derived key format');
-        key = passwordOrKey.toLowerCase();
-      } else {
-        const bytes = passwordOrKey instanceof Uint8Array ? passwordOrKey : new Uint8Array(passwordOrKey);
-        if (bytes.length !== 32) throw new Error('Invalid derived key length: expected 32 bytes');
-        key = Buffer.from(bytes).toString('hex');
-      }
-    } else {
-      if (typeof passwordOrKey !== 'string') throw new Error('Password must be a string');
-      key = deriveKey(passwordOrKey, user.salt).toString('hex'); // Derive from password
-    }
+    const key = userKeyHex(user.salt, passwordOrKey, isDerivedKey);
     
     // Decrypt credentials
     const groupCred = user.group_cred_encrypted ? decrypt(user.group_cred_encrypted, key) : null;

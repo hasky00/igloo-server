@@ -10,7 +10,7 @@
 import { randomBytes } from 'node:crypto';
 import db from './database.js';
 
-export type HeldStatus = 'held' | 'signed' | 'published' | 'failed' | 'cancelled' | 'superseded';
+export type HeldStatus = 'held' | 'signed' | 'published' | 'failed' | 'cancelled' | 'superseded' | 'vetoed';
 
 export interface UnsignedEvent {
   pubkey: string;
@@ -33,6 +33,8 @@ export interface HeldEvent {
   signed: (UnsignedEvent & { id: string; sig: string }) | null;
   publish_results: Record<string, string> | null;
   last_error: string | null;
+  /** Alert key (hex) of the share node that reported the veto, for 'vetoed'. */
+  vetoed_by: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -40,7 +42,7 @@ export interface HeldEvent {
 interface Row {
   id: string; pubkey: string; event_id: string; kind: number; event_json: string; status: HeldStatus;
   unlock_at: number; next_attempt_at: number; attempts: number; signed_json: string | null;
-  publish_results: string | null; last_error: string | null; created_at: string; updated_at: string;
+  publish_results: string | null; last_error: string | null; vetoed_by: string | null; created_at: string; updated_at: string;
 }
 
 let ensured = false;
@@ -65,6 +67,8 @@ function ensureTable(): void {
     )
   `);
   db.exec('CREATE INDEX IF NOT EXISTS idx_held_events_due ON held_events(pubkey, status, next_attempt_at)');
+  const columns = db.query('PRAGMA table_info(held_events)').all() as { name: string }[];
+  if (!columns.some(c => c.name === 'vetoed_by')) db.exec('ALTER TABLE held_events ADD COLUMN vetoed_by TEXT');
   ensured = true;
 }
 
@@ -82,6 +86,7 @@ function toHeld(row: Row): HeldEvent {
     signed: row.signed_json ? JSON.parse(row.signed_json) : null,
     publish_results: row.publish_results ? JSON.parse(row.publish_results) : null,
     last_error: row.last_error,
+    vetoed_by: row.vetoed_by ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at
   };
@@ -181,14 +186,31 @@ export function updateHeld(id: string, fields: {
   if (fields.last_error !== undefined) { sets.push('last_error = ?'); values.push(fields.last_error); }
   if (!sets.length) return;
   sets.push('updated_at = CURRENT_TIMESTAMP');
-  db.query(`UPDATE held_events SET ${sets.join(', ')} WHERE id = ?`).run(...values, id);
+  // A veto can arrive while the scheduler is re-requesting the event: it is final, never overwritten.
+  db.query(`UPDATE held_events SET ${sets.join(', ')} WHERE id = ? AND status != 'vetoed'`).run(...values, id);
 }
 
-/** Cancel a held event before it is re-requested. Only 'held' events can be cancelled. */
+/**
+ * A share node reported a veto (see src/cinderella/veto-notices.ts). Only a
+ * still-held event becomes 'vetoed', recording which node's alert key said so;
+ * the scheduler then stops re-requesting it.
+ */
+export function markVetoed(eventId: string, vetoedBy: string): boolean {
+  ensureTable();
+  const res = db.query(
+    "UPDATE held_events SET status = 'vetoed', vetoed_by = ?, last_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE event_id = ? AND status = 'held'"
+  ).run(vetoedBy, eventId);
+  return res.changes > 0;
+}
+
+/**
+ * Cancel a held or vetoed event: it leaves the list of things this gateway
+ * still works on. A cancelled event can be submitted again.
+ */
 export function cancelHeld(id: string, pubkey: string): boolean {
   ensureTable();
   const res = db.query(
-    "UPDATE held_events SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND pubkey = ? AND status = 'held'"
+    "UPDATE held_events SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND pubkey = ? AND status IN ('held', 'vetoed')"
   ).run(id, pubkey);
   return res.changes > 0;
 }

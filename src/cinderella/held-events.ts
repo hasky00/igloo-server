@@ -19,7 +19,7 @@
  * and vetoing on the share nodes (roadmap: veto listener + notification).
  */
 
-import { SimplePool, getEventHash } from 'nostr-tools';
+import { SimplePool, getEventHash, nip19 } from 'nostr-tools';
 import type { ServerBifrostNode } from '../routes/types.js';
 import { getValidRelays, withTimeout } from '../routes/utils.js';
 import type { HeldEvent, UnsignedEvent } from '../db/held-events.js';
@@ -80,6 +80,11 @@ export async function signOrHold(
 }
 
 export function heldMessage(held: HeldEvent): string {
+  if (held.status === 'vetoed') {
+    const by = held.vetoed_by ? ` (reported by share node ${nip19.npubEncode(held.vetoed_by)})` : '';
+    return `Not signed: this event was vetoed from the veto key${by} and will never be signed. ` +
+      'Cancel it in the Held tab to remove it.';
+  }
   if (held.status === 'superseded') {
     return 'Not signed: a newer version of this event is already waiting for its delay; this one will not be published';
   }
@@ -149,7 +154,9 @@ const PUBLISH_RETRY_MS = 5 * 60_000;
 export async function processDueHeld(deps: HeldSchedulerDeps): Promise<void> {
   const node = deps.getNode();
   if (!node) return;   // signer not running (e.g. before login): try later
-  const { dueHeld, updateHeld } = await store();
+  const { dueHeld, updateHeld, getHeld } = await store();
+  // A veto can arrive while a re-request is in flight: it wins, nothing is overwritten or published.
+  const vetoed = (id: string) => getHeld(id)?.status === 'vetoed';
   const now = deps.now?.() ?? Date.now();
   const log = deps.log ?? (() => {});
   const sign = deps.sign ?? ((n, t) => withTimeout(cinderella_sign(n as any, t), deps.timeoutMs ?? 30_000, 'SIGN_TIMEOUT'));
@@ -163,6 +170,7 @@ export async function processDueHeld(deps: HeldSchedulerDeps): Promise<void> {
       try {
         signed = await sign(node, template);
         if (signed.id !== held.event_id) throw new Error('signed event id does not match the held event');
+        if (vetoed(held.id)) { log('info', 'Held event was vetoed while it was re-requested; not publishing', { id: held.id }); continue; }
         updateHeld(held.id, { status: 'signed', signed: signed as any, attempts: held.attempts + 1, last_error: null });
         log('info', 'Held event signed after its delay', { id: held.id, kind: held.kind, eventId: held.event_id });
       } catch (error) {

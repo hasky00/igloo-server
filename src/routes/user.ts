@@ -12,6 +12,7 @@ import { PrivilegedRouteContext, RequestAuth } from './types.js';
 import { createNodeWithCredentials, sendSelfEcho, broadcastShareEcho } from '../node/manager.js';
 import { executeUnderNodeLock, cleanupNodeSynchronized } from '../utils/node-lock.js';
 import { getNip46Service } from '../nip46/index.js';
+import { unlockVetoNotices } from '../cinderella/veto-notices.js';
 
 // Define route-to-methods mapping for proper 404/405 handling
 const ROUTE_METHODS: Record<string, string[]> = {
@@ -215,6 +216,9 @@ export async function handleUserRoute(
             );
           }
 
+          // The veto-notice key is encrypted like the credentials: unlock it with the same secret.
+          unlockVetoNotices(userId, authSecret.secret, authSecret.isDerivedKey, context.addServerLog);
+
           // Auto-start node if credentials exist (perform atomically under node lock)
           if (credentials.group_cred && credentials.share_cred) {
             // Capture values to preserve type narrowing across async closure
@@ -412,6 +416,7 @@ export async function handleUserRoute(
                   context.addServerLog('warn', 'Failed to re-read credentials inside node lock', error);
                 }
 
+                if (latestCredentials) unlockVetoNotices(userId, authSecret.secret, authSecret.isDerivedKey, context.addServerLog);
                 if (!latestCredentials?.group_cred || !latestCredentials?.share_cred) {
                   // Nothing to start yet
                 } else if (!context.node) {

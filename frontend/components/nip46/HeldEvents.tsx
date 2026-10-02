@@ -12,23 +12,25 @@ export interface HeldEventApi {
   eventId: string
   createdAt: number
   preview: string
-  status: 'held' | 'signed' | 'published' | 'failed' | 'cancelled' | 'superseded'
+  status: 'held' | 'signed' | 'published' | 'failed' | 'cancelled' | 'superseded' | 'vetoed'
   unlockAt: string
   nextAttemptAt: string
   attempts: number
+  vetoedBy: string | null
   publishResults: Record<string, string> | null
   lastError: string | null
 }
 
 const KIND_NAMES: Record<number, string> = { 0: 'Profile', 5: 'Deletion', 10063: 'Media servers' }
 
-const STATUS_VARIANT: Record<HeldEventApi['status'], 'info' | 'warning' | 'success' | 'error' | 'default'> = {
+const STATUS_VARIANT: Record<HeldEventApi['status'], 'info' | 'warning' | 'success' | 'error' | 'default' | 'purple'> = {
   held: 'warning',
   signed: 'info',
   published: 'success',
   failed: 'error',
   cancelled: 'default',
   superseded: 'default',
+  vetoed: 'purple',
 }
 
 interface HeldEventsProps {
@@ -40,6 +42,14 @@ export function HeldEvents({ authHeaders }: HeldEventsProps) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [cancelling, setCancelling] = useState<string | null>(null)
+  const [notice, setNotice] = useState<{ npub: string | null; nodeAlertPubkeys: string[] } | null>(null)
+
+  useEffect(() => {
+    fetch('/api/held-events/notice-key', { headers: authHeaders })
+      .then(res => (res.ok ? res.json() : null))
+      .then(body => { if (body) setNotice(body) })
+      .catch(() => {})
+  }, [authHeaders])
 
   const load = useCallback(async () => {
     try {
@@ -83,9 +93,23 @@ export function HeldEvents({ authHeaders }: HeldEventsProps) {
     <div className="space-y-3">
       <p className="text-sm text-gray-400">
         Profile changes and deletions are held by the share nodes before they can be signed. The gateway
-        requests them again after the delay and publishes them. Cancel stops this gateway from doing so;
-        it is not a veto against someone holding a stolen share.
+        requests them again after the delay and publishes them. To stop one for good, veto it from your
+        phone (reply to the node's alert): it then shows as vetoed here. Cancel only stops this gateway
+        from re-requesting it; it is not a veto against someone holding a stolen share.
       </p>
+      {notice && (
+        <div className="rounded border border-gray-700 bg-gray-900/40 p-3 text-xs text-gray-300">
+          <p>
+            Gateway notice npub (put it in each share node's <code>veto.gateway_pubkey</code>, so vetoes show here):
+          </p>
+          {notice.npub
+            ? <code className="mt-1 block break-all text-blue-200">{notice.npub}</code>
+            : <p className="mt-1 text-gray-400">Created when you unlock the signer (headless: set NOTICE_SECRET).</p>}
+          {notice.nodeAlertPubkeys.length === 0 && (
+            <p className="mt-1 text-yellow-400">NODE_ALERT_PUBKEYS is not set: vetoes from share nodes are not shown.</p>
+          )}
+        </div>
+      )}
       {error && <p className="text-sm text-red-400">{error}</p>}
       {loading && <p className="text-sm text-gray-500">Loading…</p>}
       {!loading && !error && events.length === 0 && <p className="text-sm text-gray-500">No held events.</p>}
@@ -100,7 +124,7 @@ export function HeldEvents({ authHeaders }: HeldEventsProps) {
                   ? `unlocks ${new Date(ev.unlockAt).toLocaleString()}`
                   : `created ${new Date(ev.createdAt * 1000).toLocaleString()}`}
               </span>
-              {ev.status === 'held' && (
+              {(ev.status === 'held' || ev.status === 'vetoed') && (
                 <Button
                   size="sm"
                   variant="outline"
@@ -112,6 +136,11 @@ export function HeldEvents({ authHeaders }: HeldEventsProps) {
                 </Button>
               )}
             </div>
+            {ev.status === 'vetoed' && (
+              <p className="mt-1 text-xs text-purple-300">
+                Vetoed from the veto key{ev.vetoedBy ? <> (reported by share node <code className="break-all">{ev.vetoedBy}</code>)</> : null}. It will never be signed.
+              </p>
+            )}
             {ev.preview && <pre className="mt-2 whitespace-pre-wrap break-all text-xs text-gray-300">{ev.preview}</pre>}
             {ev.lastError && <p className="mt-1 text-xs text-yellow-400">Last attempt: {ev.lastError}</p>}
             {ev.publishResults && (
