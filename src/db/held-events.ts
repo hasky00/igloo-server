@@ -169,6 +169,7 @@ export function listHeld(pubkey: string, limit = 50): HeldEvent[] {
 
 export function updateHeld(id: string, fields: {
   status?: HeldStatus;
+  unlock_at?: number;
   next_attempt_at?: number;
   attempts?: number;
   signed?: HeldEvent['signed'];
@@ -179,6 +180,7 @@ export function updateHeld(id: string, fields: {
   const sets: string[] = [];
   const values: (string | number | null)[] = [];
   if (fields.status !== undefined) { sets.push('status = ?'); values.push(fields.status); }
+  if (fields.unlock_at !== undefined) { sets.push('unlock_at = ?'); values.push(fields.unlock_at); }
   if (fields.next_attempt_at !== undefined) { sets.push('next_attempt_at = ?'); values.push(fields.next_attempt_at); }
   if (fields.attempts !== undefined) { sets.push('attempts = ?'); values.push(fields.attempts); }
   if (fields.signed !== undefined) { sets.push('signed_json = ?'); values.push(fields.signed ? JSON.stringify(fields.signed) : null); }

@@ -23,13 +23,39 @@ import { SimplePool, getEventHash, nip19 } from 'nostr-tools';
 import type { ServerBifrostNode } from '../routes/types.js';
 import { getValidRelays, withTimeout } from '../routes/utils.js';
 import type { HeldEvent, UnsignedEvent } from '../db/held-events.js';
-import { heldDelayHours, isReplaceable, retryMarginMs } from './held-config.js';
-import { cinderella_sign, group_pubkey, type EventTemplate } from './request.js';
+import { heldDelayHours, isReplaceable, retryEveryMs, retryMarginMs } from './held-config.js';
+import { cinderella_sign, group_pubkey, SignRefusedError, type EventTemplate, type PeerRefusal } from './request.js';
 import type { NostrEvent } from './types.js';
 
 export type HeldOutcome =
   | { ok: true; event: NostrEvent }
-  | { ok: false; held: HeldEvent };
+  | { ok: false; held: HeldEvent }
+  /** Every node that answered refused it for good (e.g. kind not allowed): not held. */
+  | { ok: false; refused: string; refusals: PeerRefusal[] };
+
+/** The share nodes' refusals carried by a failed cinderella_sign, if any. */
+export function refusalsOf(error: unknown): PeerRefusal[] {
+  return error instanceof SignRefusedError ? error.refusals : [];
+}
+
+/** What the nodes said, for the Held card and the logs ("still locked until …"). */
+export function describeFailure(error: unknown): string {
+  const refusals = refusalsOf(error);
+  if (refusals.length) return Array.from(new Set(refusals.map(r => r.reason))).join('; ');
+  const message = error instanceof Error ? error.message : String(error);
+  return /time(d)? ?out/i.test(message)
+    ? `no share node answered (${message.replace(/^cinderella: /, '')}): offline, or running older code that refuses silently`
+    : message.replace(/^cinderella: /, '');
+}
+
+/** The latest unlock time the refusing nodes reported, if any. */
+function reportedUnlock(refusals: PeerRefusal[]): number | null {
+  const times = refusals
+    .filter(r => r.code === 'locked' || r.code === 'held')
+    .map(r => r.unlock_at)
+    .filter((t): t is number => typeof t === 'number');
+  return times.length ? Math.max(...times) : null;
+}
 
 const HOUR = 3_600_000;
 
@@ -68,14 +94,26 @@ export async function signOrHold(
   const signed = attempts.find((a): a is PromiseFulfilledResult<NostrEvent> => a.status === 'fulfilled');
   if (signed) return { ok: true, event: signed.value };
 
-  const unlockAt = now + delayHours * HOUR;
-  const held = holdEvent({
+  const errors = attempts.map(a => (a as PromiseRejectedResult).reason);
+  const refusals = errors.flatMap(refusalsOf);
+  if (refusals.length && refusals.every(r => r.code === 'denied')) {
+    return { ok: false, refused: Array.from(new Set(refusals.map(r => r.reason))).join('; '), refusals };
+  }
+
+  // The node's own unlock time when it told us; otherwise our guess from HELD_KINDS.
+  const unlockAt = reportedUnlock(refusals) ?? now + delayHours * HOUR;
+  const { updateHeld, markVetoed, getHeld } = await store();
+  let held = holdEvent({
     event,
     eventId,
     unlockAt,
     nextAttemptAt: unlockAt + retryMarginMs(),
     replaceable: isReplaceable(event.kind)
   });
+  const vetoed = refusals.find(r => r.code === 'vetoed');
+  if (vetoed) markVetoed(eventId, vetoed.peer);
+  else if (held.status === 'held') updateHeld(held.id, { last_error: errors.map(describeFailure).filter(Boolean).join(' | ') || null });
+  held = getHeld(held.id) ?? held;
   return { ok: false, held };
 }
 
@@ -150,11 +188,54 @@ export interface HeldSchedulerDeps {
 
 const PUBLISH_RETRY_MS = 5 * 60_000;
 
+export interface RetryPlan {
+  reason: string;
+  /** Give up: mark 'failed'. */
+  fail: boolean;
+  nextAttemptAt: number;
+  /** A node reported its unlock time: store it (the card shows it). */
+  unlockAt?: number;
+  /** A node said it is vetoed. */
+  vetoedBy?: string;
+}
+
+/**
+ * When to re-request a held event after a failed attempt, from what the
+ * share nodes said:
+ *   vetoed        → vetoed, never again
+ *   denied        → failed (refused for good)
+ *   locked        → at the node's unlock time (+ margin)
+ *   rate_limited  → when the node said a slot frees up (+ margin)
+ *   anything else (delay not started, catching up, nonce trouble, no answer)
+ *                 → every HELD_RETRY_EVERY_MS (15 min), until one delay
+ *                   length past the unlock time; then failed
+ */
+export function planRetry(held: HeldEvent, error: unknown, now: number): RetryPlan {
+  const refusals = refusalsOf(error);
+  const reason = describeFailure(error);
+  const margin = retryMarginMs();
+
+  const vetoed = refusals.find(r => r.code === 'vetoed');
+  if (vetoed) return { reason, fail: false, nextAttemptAt: now, vetoedBy: vetoed.peer };
+  if (refusals.length && refusals.every(r => r.code === 'denied')) return { reason, fail: true, nextAttemptAt: now };
+
+  const unlock = refusals.find(r => r.code === 'locked' && typeof r.unlock_at === 'number') ? reportedUnlock(refusals) : null;
+  if (unlock !== null && unlock > now) return { reason, fail: false, nextAttemptAt: unlock + margin, unlockAt: unlock };
+
+  const limited = refusals.filter(r => r.code === 'rate_limited' && typeof r.retry_at === 'number').map(r => r.retry_at as number);
+  if (limited.length) return { reason, fail: false, nextAttemptAt: Math.max(...limited) + margin };
+
+  const deadline = held.unlock_at + (heldDelayHours(held.kind) ?? 24) * HOUR;
+  const next = now + retryEveryMs();
+  if (next > deadline) return { reason: `${reason} (gave up: no share node signed it by ${new Date(deadline).toISOString()})`, fail: true, nextAttemptAt: now };
+  return { reason, fail: false, nextAttemptAt: next };
+}
+
 /** One pass over the due held events of the signer's identity. */
 export async function processDueHeld(deps: HeldSchedulerDeps): Promise<void> {
   const node = deps.getNode();
   if (!node) return;   // signer not running (e.g. before login): try later
-  const { dueHeld, updateHeld, getHeld } = await store();
+  const { dueHeld, updateHeld, getHeld, markVetoed } = await store();
   // A veto can arrive while a re-request is in flight: it wins, nothing is overwritten or published.
   const vetoed = (id: string) => getHeld(id)?.status === 'vetoed';
   const now = deps.now?.() ?? Date.now();
@@ -174,15 +255,21 @@ export async function processDueHeld(deps: HeldSchedulerDeps): Promise<void> {
         updateHeld(held.id, { status: 'signed', signed: signed as any, attempts: held.attempts + 1, last_error: null });
         log('info', 'Held event signed after its delay', { id: held.id, kind: held.kind, eventId: held.event_id });
       } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        const attempts = held.attempts + 1;
-        if (attempts < 2) {
-          const delay = (heldDelayHours(held.kind) ?? 24) * HOUR;
-          updateHeld(held.id, { attempts, next_attempt_at: now + delay + retryMarginMs(), last_error: reason });
-          log('warning', 'Held event not signed yet; will try once more after another delay', { id: held.id, kind: held.kind, reason });
+        const plan = planRetry(held, error, now);
+        if (plan.vetoedBy) {
+          markVetoed(held.event_id, plan.vetoedBy);
+          log('info', 'Held event was vetoed (reported by a share node)', { id: held.id });
         } else {
-          updateHeld(held.id, { attempts, status: 'failed', last_error: reason });
-          log('error', 'Held event could not be signed; giving up', { id: held.id, kind: held.kind, reason });
+          updateHeld(held.id, {
+            attempts: held.attempts + 1,
+            last_error: plan.reason,
+            ...(plan.fail ? { status: 'failed' as const } : { next_attempt_at: plan.nextAttemptAt }),
+            ...(plan.unlockAt !== undefined ? { unlock_at: plan.unlockAt } : {}),
+          });
+          log(plan.fail ? 'error' : 'warning', plan.fail ? 'Held event could not be signed; giving up' : 'Held event not signed yet; will try again', {
+            id: held.id, kind: held.kind, reason: plan.reason,
+            ...(plan.fail ? {} : { nextAttemptAt: new Date(plan.nextAttemptAt).toISOString() })
+          });
         }
         continue;
       }
