@@ -36,6 +36,35 @@ async function loadNostrConnect() {
   return NostrConnectLib
 }
 
+/** NIP-46 connection heartbeat (see Nip46Service.ensureHealthy). */
+const NIP46_HEALTH_INTERVAL_MS = 60_000
+const NIP46_HEALTH_TIMEOUT_MS = 15_000
+
+/** A REQ for nothing on one relay of the agent's pool; resolves on EOSE, rejects on timeout or close. */
+function probeRelay(pool: any, url: string, timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let sub: any
+    let settled = false
+    // Closing the subscription fires onclose synchronously: settle first, then close.
+    const finish = (error?: unknown) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (error) reject(error); else resolve()
+      try { sub?.close?.() } catch {}
+    }
+    const timer = setTimeout(() => finish(new Error('timeout')), timeoutMs)
+    Promise.resolve(pool.ensureRelay(url, { connectionTimeout: timeoutMs }))
+      .then((relay: any) => {
+        sub = relay.subscribe([{ ids: ['0'.repeat(64)], limit: 1 }], {
+          oneose: () => finish(),
+          onclose: (reason: string) => finish(new Error(String(reason))),
+        })
+      })
+      .catch((error: unknown) => finish(error))
+  })
+}
+
 function generateTransportKey(): string {
   return randomBytes(32).toString('hex')
 }
@@ -173,6 +202,7 @@ export class Nip46Service {
   private currentRelays: string[] = []
   private startingPromise: Promise<void> | null = null
   private stopping = false
+  private healthTimer: ReturnType<typeof setInterval> | null = null
   private started = false
   private readonly onRequestBound: (req: any) => void
   private readonly onBouncedBound: (event: any, reason: any) => void
@@ -226,6 +256,7 @@ export class Nip46Service {
   }
 
   async stop(): Promise<void> {
+    this.stopHealthCheck()
     if (!this.agent || this.stopping) return
     this.stopping = true
     try {
@@ -255,6 +286,58 @@ export class Nip46Service {
         this.log('error', 'Failed to reload NIP-46 relays', { error: this.serializeError(error) })
       }
     }
+  }
+
+  /**
+   * Send the connect reply. Returns how many of the client's relays accepted it
+   * (null when unknown: no client relays, or a socket that reports no receipts).
+   */
+  private async sendConnectAck(ack: { id: string | null; result: string }, pubkey: string, relays: string[]): Promise<number | null> {
+    try {
+      if (!this.agent?.socket) throw new Error('NIP-46 service is not running')
+      const res = await this.agent.socket.send(ack, pubkey, relays.length ? relays : undefined)
+      return relays.length && typeof res?.acks === 'number' ? res.acks : null
+    } catch (error) {
+      this.log('warn', 'Failed to send connect acknowledgement', { error: this.serializeError(error) })
+      return relays.length ? 0 : null
+    }
+  }
+
+  /** Close the NIP-46 connection and open a fresh one (same key, same sessions). */
+  async restart(reason: string): Promise<void> {
+    if (this.activeUserId == null) return
+    this.log('info', 'Restarting the NIP-46 connection', { reason })
+    await this.stop()
+    await this.ensureStarted()
+  }
+
+  /**
+   * Is the NIP-46 connection alive? Sends a tiny REQ on the socket's own relays
+   * and needs an answer from at least one within the timeout. A dropped or
+   * half-open connection never recovers by itself and fails every send
+   * silently, so a dead one is restarted. Returns false if it had to restart.
+   */
+  async ensureHealthy(timeoutMs = NIP46_HEALTH_TIMEOUT_MS): Promise<boolean> {
+    if (!this.started || this.stopping || !this.agent || this.activeUserId == null) return true
+    const pool = this.agent?.socket?._pool
+    if (!pool || typeof pool.ensureRelay !== 'function') return true   // library changed: can't tell
+    const own = await this.loadRelays(this.activeUserId)
+    const results = await Promise.all(own.map(url => probeRelay(pool, url, timeoutMs).then(() => true, () => false)))
+    if (results.some(Boolean)) return true
+    this.log('warn', 'NIP-46 relay connection is dead; restarting it', { relays: own })
+    await this.restart('relay connection dead')
+    return false
+  }
+
+  private startHealthCheck() {
+    this.stopHealthCheck()
+    this.healthTimer = setInterval(() => { void this.ensureHealthy().catch(() => {}) }, NIP46_HEALTH_INTERVAL_MS)
+    if (typeof this.healthTimer.unref === 'function') this.healthTimer.unref()
+  }
+
+  private stopHealthCheck() {
+    if (this.healthTimer) clearInterval(this.healthTimer)
+    this.healthTimer = null
   }
 
   async connectFromUri(userId: number | bigint, uri: string) {
@@ -336,10 +419,23 @@ export class Nip46Service {
     // at once, its first request marks the session active, and a later
     // 'pending' upsert here would overwrite that (session stuck at PENDING).
     const secret = typeof invite?.secret === 'string' && invite.secret.length > 0 ? invite.secret : 'ack'
-    try {
-      await this.agent.socket.send({ id: invite?.secret ?? null, result: secret }, normalizedPubkey)
-    } catch (error) {
-      this.log('warn', 'Failed to send connect acknowledgement', { error: this.serializeError(error) })
+    const ack = { id: invite?.secret ?? null, result: secret }
+    // The client listens only on its own relays: count how many of them took the reply.
+    let accepted = await this.sendConnectAck(ack, normalizedPubkey, relays)
+    if (accepted === 0) {
+      // None did. A stale connection fails silently (the library never throws on
+      // a failed publish): restart it once and send again before giving up.
+      this.log('warn', 'NIP-46 connect reply reached none of the client relays; restarting the NIP-46 connection and sending again', { relays })
+      await this.restart('connect reply not delivered')
+      accepted = await this.sendConnectAck(ack, normalizedPubkey, relays)
+    }
+    let warning: string | undefined
+    if (accepted === 0) {
+      warning = `None of the client's relays accepted the connect reply (${relays.join(', ')}). ` +
+        'They may be down or refusing it: choose other relays for the remote signer in the client app and make a new link.'
+      this.log('warn', 'NIP-46 connect reply not delivered', { relays })
+    } else if (accepted !== null) {
+      this.log('info', 'NIP-46 connect reply sent', { client: normalizedPubkey.slice(0, 8), relays, accepted })
     }
 
 
@@ -351,6 +447,7 @@ export class Nip46Service {
     })
 
     return {
+      ...(warning ? { warning } : {}),
       session: {
         pubkey: session.client_pubkey,
         status: session.status,
@@ -402,6 +499,7 @@ export class Nip46Service {
       await this.agent.connect(relays)
       this.started = true
       this.currentRelays = relays
+      this.startHealthCheck()
       this.log('info', 'NIP-46 service started', { relays })
     } catch (error) {
       try {

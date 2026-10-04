@@ -530,6 +530,7 @@ export async function handleNip46Route(
     try {
       service.setActiveUser(userId)
       await service.ensureStarted()
+      await service.ensureHealthy()
       const result = await service.connectFromUri(userId, uriRaw)
       return Response.json(result, { headers })
     } catch (error) {
