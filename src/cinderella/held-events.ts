@@ -187,6 +187,8 @@ export interface HeldSchedulerDeps {
 }
 
 const PUBLISH_RETRY_MS = 5 * 60_000;
+/** Give up on an event the nodes keep answering about (but never sign) after this long past its unlock. */
+const ANSWERED_GIVE_UP_MS = 7 * 24 * HOUR;
 
 export interface RetryPlan {
   reason: string;
@@ -204,11 +206,14 @@ export interface RetryPlan {
  * share nodes said:
  *   vetoed        → vetoed, never again
  *   denied        → failed (refused for good)
- *   locked        → at the node's unlock time (+ margin)
+ *   locked, or held with an unlock time (the node restarted its delay)
+ *                 → at the node's unlock time (+ margin); the card shows it
  *   rate_limited  → when the node said a slot frees up (+ margin)
- *   anything else (delay not started, catching up, nonce trouble, no answer)
- *                 → every HELD_RETRY_EVERY_MS (15 min), until one delay
- *                   length past the unlock time; then failed
+ *   held without a time, catching up, nonce trouble
+ *                 → every HELD_RETRY_EVERY_MS (15 min): the node is there and
+ *                   will unlock, so no early give-up (hard cap: 7 days)
+ *   no answer at all → every 15 min, until one delay length past the unlock
+ *                   time; then failed
  */
 export function planRetry(held: HeldEvent, error: unknown, now: number): RetryPlan {
   const refusals = refusalsOf(error);
@@ -219,14 +224,22 @@ export function planRetry(held: HeldEvent, error: unknown, now: number): RetryPl
   if (vetoed) return { reason, fail: false, nextAttemptAt: now, vetoedBy: vetoed.peer };
   if (refusals.length && refusals.every(r => r.code === 'denied')) return { reason, fail: true, nextAttemptAt: now };
 
-  const unlock = refusals.find(r => r.code === 'locked' && typeof r.unlock_at === 'number') ? reportedUnlock(refusals) : null;
+  // The node's own unlock time wins over our guess, also when it restarted the delay.
+  const unlock = reportedUnlock(refusals);
   if (unlock !== null && unlock > now) return { reason, fail: false, nextAttemptAt: unlock + margin, unlockAt: unlock };
 
   const limited = refusals.filter(r => r.code === 'rate_limited' && typeof r.retry_at === 'number').map(r => r.retry_at as number);
   if (limited.length) return { reason, fail: false, nextAttemptAt: Math.max(...limited) + margin };
 
-  const deadline = held.unlock_at + (heldDelayHours(held.kind) ?? 24) * HOUR;
   const next = now + retryEveryMs();
+  // A node that answers (held, catching up, nonce trouble) will get there: keep going.
+  if (refusals.length) {
+    const cap = held.unlock_at + ANSWERED_GIVE_UP_MS;
+    if (next > cap) return { reason: `${reason} (gave up: still not signed ${ANSWERED_GIVE_UP_MS / (24 * HOUR)} days after the unlock)`, fail: true, nextAttemptAt: now };
+    return { reason, fail: false, nextAttemptAt: next };
+  }
+  // Nobody answered: give up one delay length past the unlock.
+  const deadline = held.unlock_at + (heldDelayHours(held.kind) ?? 24) * HOUR;
   if (next > deadline) return { reason: `${reason} (gave up: no share node signed it by ${new Date(deadline).toISOString()})`, fail: true, nextAttemptAt: now };
   return { reason, fail: false, nextAttemptAt: next };
 }

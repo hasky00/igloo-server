@@ -30,4 +30,36 @@ describe('nonce reset from a restarted share node', () => {
     expect(out.dropped).toBe(0);
     expect(out.kept).toBe(2);
   });
+
+  test('the Gateway node also drops what it gave, ignores stale messages, and announces its own start', () => {
+    const out = runRouteScript<any>(`
+      const root = ${JSON.stringify(PROJECT_ROOT)};
+      const { Lib, PackageEncoder } = await import('@frostr/bifrost');
+      const { createBifrostNode } = await import(root + 'src/frostr/node.ts');
+      const { RESET_TOPIC } = await import(root + 'src/cinderella/resync.ts');
+      const { group, shares } = Lib.generate_dealer_package(2, 3);
+      const node = createBifrostNode({ group: PackageEncoder.group.encode(group), share: PackageEncoder.share.encode(shares[0]), relays: ['wss://relay.invalid'] });
+      const peerIdx = shares[1].idx;
+      const peer = group.members.find(m => m.idx === peerIdx).pubkey.slice(-64);
+      const self = group.members.find(m => m.idx === shares[0].idx).pubkey.slice(-64);
+      node.pool._outgoing.set(peerIdx, new Map([['g1', {}]]));
+      node.emit('message', { type: 'event', topic: RESET_TOPIC, data: {}, event: { pubkey: peer } });
+      const gaveDropped = (node.pool._outgoing.get(peerIdx)?.size ?? 0) === 0;
+
+      const now = Math.floor(Date.now() / 1000);
+      const ev = (created_at) => ({ pubkey: peer, created_at, kind: 20000, tags: [['p', self]], content: '' });
+      const fresh = node.client._filter(ev(now));
+      const replayed = node.client._filter(ev(now - 120));
+
+      const announced = [];
+      node.client.announce = (t, peers) => { announced.push({ topic: t.topic, peers: peers.length }); return []; };
+      node.emit('ready', node);
+      console.log('@@RESULT@@' + JSON.stringify({ gaveDropped, fresh, replayed, announced, topic: RESET_TOPIC }));
+      process.exit(0);
+    `);
+    expect(out.gaveDropped).toBe(true);
+    expect(out.fresh).toBe(true);
+    expect(out.replayed).toBe(false);
+    expect(out.announced).toEqual([{ topic: out.topic, peers: 2 }]);
+  });
 });
