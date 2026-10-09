@@ -196,6 +196,36 @@ describe('held events', () => {
     expect(out.denied.error).toContain('not in any tier');
   });
 
+  test('the Gateway follows the node: a restarted delay moves the retry; a node that answers is not given up on', () => {
+    const out = runRouteScript<any>(setup + `
+      const { processDueHeld } = await import(root + 'src/cinderella/held-events.ts');
+      const { SignRefusedError } = await import(root + 'src/cinderella/request.ts');
+      const node = fakeNode();
+      const peer = 'b'.repeat(64);
+      const refuse = (r) => async () => { throw new SignRefusedError('cinderella: refused by share node: ' + r.reason, [{ sighash: null, peer, idx: 2, ...r }]); };
+
+      // 4 Oct: the node restarted the delay after a failed signature; new unlock later than our guess.
+      let clock = 3_600_000;
+      const a = hold(ev(0, 1, 'a'), clock);                               // our guess: unlock now
+      const later = clock + 3_600_000 + 20 * 60_000;
+      await processDueHeld({ getNode: () => node, now: () => clock, sign: refuse({ code: 'held', unlock_at: later, reason: 'queued: kind 0 unlocks at ' + new Date(later).toISOString() }), publish: async () => ({}) });
+      const ra = store.getHeld(a.id);
+
+      // A node that keeps answering "held" (no time yet) long past our own deadline: keep trying.
+      const b = hold(ev(10063, 2), clock);
+      let rb = store.getHeld(b.id);
+      const answering = { getNode: () => node, now: () => clock, sign: refuse({ code: 'held', unlock_at: null, reason: 'held: veto alert not delivered yet, so the delay has not started' }), publish: async () => ({}) };
+      for (let i = 0; i < 40 && rb.status === 'held'; i++) { clock = Math.max(clock, rb.next_attempt_at); await processDueHeld(answering); rb = store.getHeld(b.id); }
+      await finish({ later, a: { status: ra.status, unlock: ra.unlock_at, next: ra.next_attempt_at }, b: { status: rb.status, attempts: rb.attempts, pastOwnDeadline: clock > 3_600_000 + 3_600_000 /* our guess + the 1h delay */ } });
+    `, { ...ENV, HELD_KINDS: '{"0":1,"10063":1,"5":48}' });
+    expect(out.a.status).toBe('held');
+    expect(out.a.unlock).toBe(out.later);
+    expect(out.a.next).toBe(out.later);                                  // margin 0 in this test
+    expect(out.b.status).toBe('held');                                    // not failed at our 1h deadline
+    expect(out.b.attempts).toBe(40);
+    expect(out.b.pastOwnDeadline).toBe(true);
+  });
+
   test('first request: the node\'s own unlock time is stored; refusals and reasons reach /api/sign', () => {
     const out = runRouteScript<any>(setup + `
       const { signOrHold } = await import(root + 'src/cinderella/held-events.ts');

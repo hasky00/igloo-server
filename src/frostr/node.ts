@@ -9,7 +9,7 @@ import {
 } from './types.js';
 import { prepareNodePolicies, registerNodePolicyMetadata } from './policy.js';
 import { gatewayNodeOptions } from '../cinderella/gateway-node.js';
-import { attach_requester_resync, close_node, single_flight_pings } from '../cinderella/resync.js';
+import { announce_nonce_reset, attach_nonce_reset, close_node, ignore_stale_messages, single_flight_pings } from '../cinderella/resync.js';
 
 /**
  * Configuration for BifrostNode event logging
@@ -45,7 +45,13 @@ export function createBifrostNode(
     single_flight_pings(node);
     // A share node that restarted tells us its nonces are dead: drop them, so
     // the next signature pings it for fresh ones first (see resync.ts).
-    attach_requester_resync(node, msg => eventConfig.customLogger?.('info', msg));
+    attach_nonce_reset(node, msg => eventConfig.customLogger?.('info', msg));
+    // The relay replays bifrost messages to a fresh subscription: ignore the ones
+    // sent before this node started (or older than 30 s); nobody waits for them.
+    ignore_stale_messages(node);
+    // And tell the share nodes we (re)started, so they drop the nonces they
+    // counted as given to our previous run.
+    node.on('ready', () => announce_nonce_reset(node, msg => eventConfig.customLogger?.('info', msg)));
 
     // Set up event handlers with optional logging
     setupNodeEvents(node, eventConfig);
