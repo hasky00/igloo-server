@@ -1,11 +1,11 @@
 /**
  * Which event kinds the share nodes delay, and by how long.
  *
- * Share nodes refuse silently (FROSTR-ORG/bifrost#13), so the gateway cannot
- * read "queued until …" from a refusal. It keeps its own copy of the delay
- * tiers instead: HELD_KINDS='{"0":24,"10063":24,"5":48}' (hours), defaulting
- * to Cinderella's cinderella.config.json. If the copies drift, the re-request
- * schedule absorbs it: an early re-request just waits another round.
+ * HELD_KINDS='{"0":24,"10063":24,"5":48}' (hours) says which kinds to hold
+ * and gives the first guess of the unlock time. Cinderella nodes tell the
+ * Gateway their real unlock time when they refuse (src/cinderella/refusal.ts),
+ * and the scheduler follows that; the guess only matters for nodes that don't
+ * answer (older code, offline). Keep it equal to the nodes' delay tiers.
  */
 
 const DEFAULT_HELD_KINDS: Record<number, number> = { 0: 24, 10063: 24, 5: 48 };
@@ -40,6 +40,15 @@ export function heldDelayHours(kind: number): number | undefined {
 /** Replaceable kinds (NIP-01): only the newest event per kind counts. */
 export function isReplaceable(kind: number): boolean {
   return kind === 0 || kind === 3 || (kind >= 10000 && kind < 20000);
+}
+
+/**
+ * When a node gave no unlock time (no answer, delay not started yet, nonce
+ * trouble), try again this often: HELD_RETRY_EVERY_MS, default 15 minutes.
+ */
+export function retryEveryMs(): number {
+  const n = Number.parseInt(process.env.HELD_RETRY_EVERY_MS ?? '', 10);
+  return Number.isFinite(n) && n >= 1000 ? n : 15 * 60_000;
 }
 
 /** Wait this long past the unlock before re-requesting (clock skew between machines). */

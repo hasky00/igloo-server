@@ -121,8 +121,10 @@ export function HeldEvents({ authHeaders }: HeldEventsProps) {
               <Badge variant={STATUS_VARIANT[ev.status]}>{ev.status}</Badge>
               <span className="text-gray-400">
                 {ev.status === 'held'
-                  ? `unlocks ${new Date(ev.unlockAt).toLocaleString()}`
-                  : `created ${new Date(ev.createdAt * 1000).toLocaleString()}`}
+                  ? `unlocks ${new Date(ev.unlockAt).toLocaleString()} · next try ${new Date(ev.nextAttemptAt).toLocaleString()}`
+                  : ev.status === 'signed'
+                    ? `signed · next publish try ${new Date(ev.nextAttemptAt).toLocaleString()}`
+                    : `created ${new Date(ev.createdAt * 1000).toLocaleString()}`}
               </span>
               {(ev.status === 'held' || ev.status === 'vetoed') && (
                 <Button

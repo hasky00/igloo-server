@@ -251,6 +251,10 @@ export async function handleSignRoute(req: Request, url: URL, context: RouteCont
           status: 'vetoed'
         }, { status: 403, headers });
       }
+      if (signed.code === 'SIGN_REFUSED') {
+        try { context.addServerLog('warning', 'Signing refused by a share node', { id, kind: template.kind, reason: signed.reason }); } catch {}
+        return Response.json({ code: signed.code, error: signed.reason }, { status: 403, headers });
+      }
       if (signed.code === 'SIGN_REFUSED_OR_UNREACHABLE') {
         try { context.addServerLog('warning', 'Signing refused or timed out', { id, kind: template.kind, timeoutMs }); } catch {}
         return Response.json({ code: signed.code, error: signed.reason }, { status: 504, headers });
