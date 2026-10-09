@@ -1453,9 +1453,18 @@ export function setupNodeEventListeners(
   setupConnectionMonitoring(node, addServerLog);
 
   // Basic node events - matching Igloo Desktop
+  // An intentional cleanup (cleanupBifrostNode) removes these listeners before it
+  // closes the node, so reaching 'closed' here means the transport closed by itself:
+  // the relay connection dropped, and bifrost's transport never reconnects. Without a
+  // recreate the Gateway stops signing for good (seen 6 Oct: no signature for 3 days).
+  let closedHandled = false;
   node.on('closed', () => {
     addServerLog('bifrost', 'Bifrost node is closed');
     stopConnectivityMonitoring();
+    if (closedHandled) return;
+    closedHandled = true;
+    addServerLog('warning', 'Bifrost node closed unexpectedly (relay connection lost); recreating it');
+    recreateNodeFn().catch((error) => addServerLog('error', 'Failed to recreate the closed node', error));
   });
 
   node.on('error', (error: unknown) => {
