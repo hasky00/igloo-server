@@ -999,4 +999,84 @@ describe('NIP-46 nostrconnect login (welshman / Coracle)', () => {
     const out = runRouteScript<{ listening: string[] }>(script);
     expect(out.listening.sort()).toEqual(['wss://client.example', 'wss://own.example']);
   });
+
+  test('a connect reply no client relay accepts: restart once, send again, then warn', () => {
+    const script = setup + `
+      let restarts = 0;
+      service.restart = async () => { restarts += 1; };
+      const relaysSent = [];
+      service.agent.socket.send = async (msg, pk, relays) => { sent.push({ msg, pk }); relaysSent.push(relays); return { acks: 0, fails: relays.length }; };
+      const uri = 'nostrconnect://' + client + '?relay=' + encodeURIComponent('wss://dead-1.example') + '&relay=' + encodeURIComponent('wss://dead-2.example') + '&secret=s4&name=Coracle';
+      const res = await service.connectFromUri(1, uri);
+      try { await database.closeDatabase(); } catch {}
+      console.log('@@RESULT@@' + JSON.stringify({ warning: res.warning ?? null, restarts, sends: sent.length, relaysSent }));
+      process.exit(0);
+    `;
+    const out = runRouteScript<{ warning: string | null; restarts: number; sends: number; relaysSent: string[][] }>(script);
+    expect(out.restarts).toBe(1);
+    expect(out.sends).toBe(2);
+    expect(out.relaysSent[0]).toEqual(['wss://dead-1.example', 'wss://dead-2.example']);   // only where the client listens
+    expect(out.warning).toContain("None of the client's relays accepted");
+    expect(out.warning).toContain('wss://dead-1.example');
+  });
+
+  test('a connect reply a client relay accepted: no restart, no warning', () => {
+    const script = setup + `
+      let restarts = 0;
+      service.restart = async () => { restarts += 1; };
+      service.agent.socket.send = async (msg, pk, relays) => { sent.push({ msg, pk }); return { acks: 1, fails: relays.length - 1 }; };
+      const uri = 'nostrconnect://' + client + '?relay=' + encodeURIComponent('wss://dead.example') + '&relay=' + encodeURIComponent('wss://alive.example') + '&secret=s5&name=Coracle';
+      const res = await service.connectFromUri(1, uri);
+      try { await database.closeDatabase(); } catch {}
+      console.log('@@RESULT@@' + JSON.stringify({ warning: res.warning ?? null, restarts, sends: sent.length }));
+      process.exit(0);
+    `;
+    const out = runRouteScript<{ warning: string | null; restarts: number; sends: number }>(script);
+    expect(out.warning).toBe(null);
+    expect(out.restarts).toBe(0);
+    expect(out.sends).toBe(1);
+  });
+});
+
+describe('NIP-46 connection health', () => {
+  test('a silent relay connection is found dead and restarted; a live one is left alone', () => {
+    const out = runRouteScript<any>(`
+      const root = ${JSON.stringify(PROJECT_ROOT)};
+      process.env.NODE_ENV = 'test';
+      process.env.HEADLESS = 'false';
+      const { TestRelay } = await import(root + 'tests/routes/helpers/test-relay.ts');
+      const relay = new TestRelay(); relay.start();
+      const database = await import(root + 'src/db/database.ts');
+      const nip46 = await import(root + 'src/db/nip46.ts');
+      await nip46.initializeNip46DB();
+      database.default.exec("INSERT INTO users (username, password_hash, salt) VALUES ('nip46-health', 'hash', 'salt')");
+      nip46.setNip46Relays(1, [relay.url]);
+      const logs = [];
+      const { Nip46Service } = await import(root + 'src/nip46/service.ts');
+      const service = new Nip46Service({ addServerLog: (t, m) => logs.push(t + ': ' + m), broadcastEvent: () => {}, getNode: () => null });
+      service.setActiveUser(1);
+      await service.ensureStarted();
+      const started = service.isRunning;
+      const firstAgent = service.agent;
+      const live = await service.ensureHealthy(1500);
+      const sameAgent = service.agent === firstAgent;
+      relay.frozen = true;                                     // socket stays open, nothing answers
+      const silent = await service.ensureHealthy(1500);
+      const restarted = service.agent !== firstAgent;
+      relay.frozen = false;
+      const afterRestart = await service.ensureHealthy(1500);
+      await service.stop();
+      relay.stop();
+      try { await database.closeDatabase(); } catch {}
+      console.log('@@RESULT@@' + JSON.stringify({ started, live, sameAgent, silent, restarted, afterRestart, logged: logs.some(l => l.includes('relay connection is dead')) }));
+      process.exit(0);
+    `, { ALLOW_LOCALHOST_RELAY: 'true' });
+    expect(out.started).toBe(true);
+    expect(out.live).toBe(true);
+    expect(out.sameAgent).toBe(true);
+    expect(out.silent).toBe(false);
+    expect(out.restarted).toBe(true);
+    expect(out.logged).toBe(true);
+    expect(out.afterRestart).toBe(true);
+  }, { timeout: 20000 });
 });

@@ -262,6 +262,8 @@ export async function handleUserRoute(
             if (resolvedId) {
               service.setActiveUser(resolvedId);
               await service.ensureStarted();
+              // Logging in (or reloading the app) is when a dead NIP-46 connection hurts: check it.
+              void service.ensureHealthy().catch(() => {});
             }
           }
 

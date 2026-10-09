@@ -382,7 +382,11 @@ export function NIP46({ authHeaders }: NIP46Props) {
       const data = await res.json().catch(() => ({}))
       const session = data?.session ?? {}
       const displayName = session.profile?.name || session.profile?.url || truncate(session.pubkey, 8) || 'client'
-      setConnectSuccess(`Connection request sent to ${displayName}. Awaiting approval.`)
+      if (data?.warning) {
+        setConnectError(`${displayName}: ${data.warning}`)
+      } else {
+        setConnectSuccess(`Connection request sent to ${displayName}. Awaiting approval.`)
+      }
       setConnectUri('')
       setShowScanner(false)
       await Promise.all([fetchSessions(), fetchRequests(), fetchRelays()])
